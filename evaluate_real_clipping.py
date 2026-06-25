@@ -35,6 +35,7 @@ METHOD_LABELS = {
     "log_likelihood": "LogLik",
     "rank": "Rank",
     "log_rank": "LogRank",
+    "lrr": "LRR",
     "entropy": "Entropy",
     "entropy_gap": "Entropy-gap",
     "binoculars": "Binoculars",
@@ -44,6 +45,7 @@ COLORS = {
     "log_likelihood": "#d00000",
     "rank": "#8c8c8c",
     "log_rank": "#00a6c8",
+    "lrr": "#7a1fff",
     "entropy": "#55a630",
     "entropy_gap": "#00851b",
     "binoculars": "#8a5a00",
@@ -101,7 +103,7 @@ def contaminated_subset(
 
 
 def available_methods(rows: list[dict[str, Any]]) -> list[str]:
-    methods = ["log_likelihood", "rank", "log_rank", "entropy", "entropy_gap"]
+    methods = ["log_likelihood", "rank", "log_rank", "lrr", "entropy", "entropy_gap"]
     if rows and "cross_entropy_ba" in rows[0].get("token_features", {}):
         methods.append("binoculars")
     return methods
@@ -119,6 +121,10 @@ def raw_doc_score(row: dict[str, Any], method: str) -> float:
         nll = -token_array(row, "logp_a")
         entropy = token_array(row, "entropy_a")
         return float((nll - entropy).mean())
+    if method == "lrr":
+        nll = -token_array(row, "logp_a")
+        logrank = token_array(row, "logrank_a")
+        return float(nll.mean() / (logrank.mean() + 1e-12))
     if method == "binoculars":
         nll = -token_array(row, "logp_a")
         xent = token_array(row, "cross_entropy_ba")
@@ -155,6 +161,13 @@ def clipped_doc_score(row: dict[str, Any], method: str, direction: int, spec: di
         nll = np.minimum(nll, spec["nll_upper"])
         return float(direction * (nll - entropy).mean())
 
+    if method == "lrr":
+        nll = -token_array(row, "logp_a")
+        logrank = token_array(row, "logrank_a")
+        nll = np.minimum(nll, spec["nll_upper"])
+        logrank = np.minimum(logrank, spec["logrank_upper"])
+        return float(direction * (nll.mean() / (logrank.mean() + 1e-12)))
+
     if method == "binoculars":
         nll = -token_array(row, "logp_a")
         xent = token_array(row, "cross_entropy_ba")
@@ -182,7 +195,7 @@ def tune_spec(
     tune_llm_clean: list[dict[str, Any]],
     tune_contam: list[dict[str, Any]],
 ) -> dict[str, float]:
-    """Tune a one-sided clipping bound on tune split."""
+    """Tune one-sided clipping bounds on tune split."""
     if not tune_contam:
         return {}
 
@@ -210,6 +223,18 @@ def tune_spec(
         vals = np.concatenate([-token_array(row, "logp_a") for row in tune_human + tune_llm_clean])
         for q in [0.85, 0.90, 0.95, 0.975, 0.99, 0.995, 0.999]:
             candidates.append({"nll_upper": float(np.quantile(vals, q))})
+    elif method == "lrr":
+        rows = tune_human + tune_llm_clean
+        nll_vals = np.concatenate([-token_array(row, "logp_a") for row in rows])
+        logrank_vals = np.concatenate([token_array(row, "logrank_a") for row in rows])
+        for nll_q in [0.85, 0.90, 0.95, 0.975, 0.99, 0.995, 0.999]:
+            for logrank_q in [0.85, 0.90, 0.95, 0.975, 0.99, 0.995, 0.999]:
+                candidates.append(
+                    {
+                        "nll_upper": float(np.quantile(nll_vals, nll_q)),
+                        "logrank_upper": float(np.quantile(logrank_vals, logrank_q)),
+                    }
+                )
 
     for spec in candidates:
         h = clipped_scores(tune_human, method, direction, spec)

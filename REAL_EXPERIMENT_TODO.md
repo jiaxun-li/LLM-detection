@@ -127,6 +127,7 @@ Primary:
 ```text
 log_likelihood
 log_rank
+LRR
 binoculars
 entropy_gap
 ```
