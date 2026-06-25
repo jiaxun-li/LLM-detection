@@ -25,7 +25,7 @@ import csv
 import json
 import random
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -107,6 +107,38 @@ def available_methods(rows: list[dict[str, Any]]) -> list[str]:
     if rows and "cross_entropy_ba" in rows[0].get("token_features", {}):
         methods.append("binoculars")
     return methods
+
+
+def validate_matching_rows(
+    primary_rows: list[dict[str, Any]],
+    secondary_rows: list[dict[str, Any]],
+    label: str,
+) -> None:
+    primary_keys = {
+        (
+            int(row["sample_id"]),
+            row.get("label"),
+            row.get("contamination_mode"),
+            float(row.get("contamination_ratio", 0.0)),
+        )
+        for row in primary_rows
+    }
+    secondary_keys = {
+        (
+            int(row["sample_id"]),
+            row.get("label"),
+            row.get("contamination_mode"),
+            float(row.get("contamination_ratio", 0.0)),
+        )
+        for row in secondary_rows
+    }
+    if primary_keys != secondary_keys:
+        missing = sorted(primary_keys - secondary_keys)[:5]
+        extra = sorted(secondary_keys - primary_keys)[:5]
+        raise ValueError(
+            f"{label} rows do not match primary rows. "
+            f"missing examples: {missing}; extra examples: {extra}"
+        )
 
 
 def token_array(row: dict[str, Any], feature: str) -> np.ndarray:
@@ -259,12 +291,11 @@ def evaluate_mode(
     tune_contam_all: list[dict[str, Any]],
     test_clean: list[dict[str, Any]],
     test_contam_all: list[dict[str, Any]],
+    binoculars_tune_clean: Optional[list[dict[str, Any]]] = None,
+    binoculars_tune_contam_all: Optional[list[dict[str, Any]]] = None,
+    binoculars_test_clean: Optional[list[dict[str, Any]]] = None,
+    binoculars_test_contam_all: Optional[list[dict[str, Any]]] = None,
 ) -> tuple[list[dict[str, Any]], dict[str, dict[str, list[float]]]]:
-    tune_human = clean_by_label(tune_clean, "human")
-    tune_llm = clean_by_label(tune_clean, "llm")
-    test_human = clean_by_label(test_clean, "human")
-    test_llm = clean_by_label(test_clean, "llm")
-
     rows = []
     curves = {
         method: {"raw_1": [], "clip_1": [], "raw_5": [], "clip_5": []}
@@ -272,26 +303,43 @@ def evaluate_mode(
     }
 
     for method in methods:
+        if method == "binoculars" and binoculars_tune_clean is not None:
+            method_tune_clean = binoculars_tune_clean
+            method_tune_contam_all = binoculars_tune_contam_all or []
+            method_test_clean = binoculars_test_clean or []
+            method_test_contam_all = binoculars_test_contam_all or []
+            score_source = "binoculars"
+        else:
+            method_tune_clean = tune_clean
+            method_tune_contam_all = tune_contam_all
+            method_test_clean = test_clean
+            method_test_contam_all = test_contam_all
+            score_source = "primary"
+
+        tune_human = clean_by_label(method_tune_clean, "human")
+        tune_llm = clean_by_label(method_tune_clean, "llm")
+        test_human = clean_by_label(method_test_clean, "human")
+
         direction = orientation(tune_human, tune_llm, method)
-        tune_contam_25 = contaminated_subset(tune_contam_all, mode, 0.25)
+        tune_contam_25 = contaminated_subset(method_tune_contam_all, mode, 0.25)
         if not tune_contam_25:
             # Fall back to the middle available ratio if 25% was not generated.
             available = sorted(
                 {
                     float(row["contamination_ratio"])
-                    for row in tune_contam_all
+                    for row in method_tune_contam_all
                     if row.get("contamination_mode") == mode
                 }
             )
             fallback = available[len(available) // 2] if available else 0.0
-            tune_contam_25 = contaminated_subset(tune_contam_all, mode, fallback)
+            tune_contam_25 = contaminated_subset(method_tune_contam_all, mode, fallback)
 
         spec = tune_spec(method, direction, tune_human, tune_llm, tune_contam_25)
         test_h_raw = oriented_raw_scores(test_human, method, direction)
         test_h_clip = clipped_scores(test_human, method, direction, spec)
 
         for ratio in ratios:
-            test_contam = contaminated_subset(test_contam_all, mode, ratio)
+            test_contam = contaminated_subset(method_test_contam_all, mode, ratio)
             raw_m = oriented_raw_scores(test_contam, method, direction)
             clip_m = clipped_scores(test_contam, method, direction, spec)
             raw_1 = tpr_at_fpr(test_h_raw, raw_m, 0.01)
@@ -309,6 +357,7 @@ def evaluate_mode(
                     "method": method,
                     "ratio": ratio,
                     "direction": direction,
+                    "score_source": score_source,
                     "clip_spec": json.dumps(spec),
                     "raw_tpr_at_1_fpr": raw_1,
                     "clipped_tpr_at_1_fpr": clip_1,
@@ -329,6 +378,7 @@ def plot_curves(
     curves: dict[str, dict[str, list[float]]],
     output_dir: Path,
     fpr_label: str,
+    title_prefix: str,
 ) -> None:
     key_raw = "raw_1" if fpr_label == "1" else "raw_5"
     key_clip = "clip_1" if fpr_label == "1" else "clip_5"
@@ -365,7 +415,7 @@ def plot_curves(
     ax.set_xticklabels([f"{int(round(r * 100))}%" for r in ratios], rotation=35)
     ax.set_xlabel("Human contamination ratio in LLM documents")
     ax.set_ylabel(f"TPR at {fpr_label}% FPR")
-    ax.set_title(f"Real XSum robustness: {mode} contamination")
+    ax.set_title(f"{title_prefix}: {mode} contamination")
     ax.grid(True, color="#d9d9d9", linewidth=1.0)
     ax.legend(loc="lower left", fontsize=8, frameon=True, framealpha=0.92, ncol=2)
 
@@ -391,7 +441,10 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--clean", required=True)
     parser.add_argument("--contaminated", required=True)
+    parser.add_argument("--binoculars-clean", default=None)
+    parser.add_argument("--binoculars-contaminated", default=None)
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--plot-title-prefix", default="Real robustness")
     parser.add_argument("--seed", type=int, default=21)
     return parser.parse_args()
 
@@ -400,14 +453,33 @@ def main() -> None:
     args = parse_args()
     clean_rows = read_jsonl(Path(args.clean))
     contaminated_rows = read_jsonl(Path(args.contaminated))
+    binoculars_clean_rows = read_jsonl(Path(args.binoculars_clean)) if args.binoculars_clean else None
+    binoculars_contaminated_rows = (
+        read_jsonl(Path(args.binoculars_contaminated)) if args.binoculars_contaminated else None
+    )
+    if (binoculars_clean_rows is None) != (binoculars_contaminated_rows is None):
+        raise ValueError("--binoculars-clean and --binoculars-contaminated must be provided together")
+    if binoculars_clean_rows is not None and binoculars_contaminated_rows is not None:
+        validate_matching_rows(clean_rows, binoculars_clean_rows, "binoculars clean")
+        validate_matching_rows(contaminated_rows, binoculars_contaminated_rows, "binoculars contaminated")
 
     tune_ids, test_ids = split_ids(clean_rows, args.seed)
     tune_clean = filter_ids(clean_rows, tune_ids)
     test_clean = filter_ids(clean_rows, test_ids)
     tune_contam = filter_ids(contaminated_rows, tune_ids)
     test_contam = filter_ids(contaminated_rows, test_ids)
+    binoculars_tune_clean = filter_ids(binoculars_clean_rows, tune_ids) if binoculars_clean_rows else None
+    binoculars_test_clean = filter_ids(binoculars_clean_rows, test_ids) if binoculars_clean_rows else None
+    binoculars_tune_contam = (
+        filter_ids(binoculars_contaminated_rows, tune_ids) if binoculars_contaminated_rows else None
+    )
+    binoculars_test_contam = (
+        filter_ids(binoculars_contaminated_rows, test_ids) if binoculars_contaminated_rows else None
+    )
 
     methods = available_methods(clean_rows)
+    if binoculars_clean_rows is not None and "binoculars" not in methods:
+        methods.append("binoculars")
     ratios = sorted({float(row["contamination_ratio"]) for row in contaminated_rows})
     modes = sorted({row["contamination_mode"] for row in contaminated_rows if row["contamination_mode"] != "none"})
     output_dir = Path(args.output_dir)
@@ -426,10 +498,14 @@ def main() -> None:
             tune_contam,
             test_clean,
             test_contam,
+            binoculars_tune_clean,
+            binoculars_tune_contam,
+            binoculars_test_clean,
+            binoculars_test_contam,
         )
         all_rows.extend(metric_rows)
-        plot_curves(methods, mode, ratios, curves, output_dir, "1")
-        plot_curves(methods, mode, ratios, curves, output_dir, "5")
+        plot_curves(methods, mode, ratios, curves, output_dir, "1", args.plot_title_prefix)
+        plot_curves(methods, mode, ratios, curves, output_dir, "5", args.plot_title_prefix)
 
     write_csv(output_dir / "metrics.csv", all_rows)
     print(f"wrote {output_dir / 'metrics.csv'}")

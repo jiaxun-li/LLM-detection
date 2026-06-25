@@ -256,6 +256,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ratios", type=float, nargs="+", default=DEFAULT_RATIOS)
     parser.add_argument("--output-dir", default="real_data")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--trust-remote-code", action="store_true")
     return parser.parse_args()
 
 
@@ -265,13 +266,14 @@ def main() -> None:
     device = torch.device(args.device)
     evaluator_model_id = args.evaluator_model or args.generator_model
 
-    tokenizer = AutoTokenizer.from_pretrained(args.generator_model)
+    tokenizer = AutoTokenizer.from_pretrained(args.generator_model, trust_remote_code=args.trust_remote_code)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
 
     generator = AutoModelForCausalLM.from_pretrained(
         args.generator_model,
         torch_dtype=torch.float16 if device.type == "cuda" else torch.float32,
+        trust_remote_code=args.trust_remote_code,
     ).to(device)
     generator.eval()
 
@@ -279,12 +281,16 @@ def main() -> None:
         evaluator_tokenizer = tokenizer
         evaluator = generator
     else:
-        evaluator_tokenizer = AutoTokenizer.from_pretrained(evaluator_model_id)
+        evaluator_tokenizer = AutoTokenizer.from_pretrained(
+            evaluator_model_id,
+            trust_remote_code=args.trust_remote_code,
+        )
         if evaluator_tokenizer.pad_token_id is None:
             evaluator_tokenizer.pad_token = evaluator_tokenizer.eos_token
         evaluator = AutoModelForCausalLM.from_pretrained(
             evaluator_model_id,
             torch_dtype=torch.float16 if device.type == "cuda" else torch.float32,
+            trust_remote_code=args.trust_remote_code,
         ).to(device)
         evaluator.eval()
 

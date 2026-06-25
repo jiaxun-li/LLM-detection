@@ -12,6 +12,13 @@ Example:
     --observer-model Qwen/Qwen2.5-0.5B \
     --reference-model Qwen/Qwen2.5-1.5B
 
+To match the upstream Binoculars implementation defaults:
+
+  python score_real_text.py \
+    --input real_data/xsum/Qwen__Qwen2.5-0.5B/clean.jsonl \
+    --output real_data/xsum/Qwen__Qwen2.5-0.5B/clean_scores.jsonl \
+    --binoculars-default-models
+
 The observer model A provides:
 
   - logp_a
@@ -24,6 +31,12 @@ computes:
 
   - logp_b
   - Binoculars-style cross entropy: H(p_B, p_A)
+
+For `--binoculars-default-models`, A is tiiuae/falcon-7b-instruct
+and B is tiiuae/falcon-7b, so the Binoculars score is the upstream
+performer perplexity divided by observer-to-performer cross entropy.
+By default this uses the native Transformers Falcon implementation; add
+`--trust-remote-code` only if a model explicitly requires it.
 """
 
 from __future__ import annotations
@@ -31,7 +44,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import torch
 import torch.nn.functional as F
@@ -39,6 +52,8 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
 EPS = 1e-12
+BINOCULARS_OBSERVER_MODEL = "tiiuae/falcon-7b"
+BINOCULARS_PERFORMER_MODEL = "tiiuae/falcon-7b-instruct"
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -58,13 +73,14 @@ def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
-def load_model_and_tokenizer(model_id: str, device: torch.device):
-    tokenizer = AutoTokenizer.from_pretrained(model_id)
+def load_model_and_tokenizer(model_id: str, device: torch.device, trust_remote_code: bool):
+    tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=trust_remote_code)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
     model = AutoModelForCausalLM.from_pretrained(
         model_id,
         torch_dtype=torch.float16 if device.type == "cuda" else torch.float32,
+        trust_remote_code=trust_remote_code,
     ).to(device)
     model.eval()
     return tokenizer, model
@@ -115,7 +131,10 @@ def score_row(
     observer_model,
     reference_model,
     device: torch.device,
+    reference_device: torch.device,
     store_tokens: bool,
+    observer_model_id: str,
+    reference_model_id: Optional[str],
 ) -> dict[str, Any]:
     prompt = row["prompt"]
     text = row["text"]
@@ -141,7 +160,7 @@ def score_row(
     }
 
     if reference_model is not None:
-        reference_logits = model_logits(reference_model, input_ids, device)[start:end]
+        reference_logits = model_logits(reference_model, input_ids, reference_device)[start:end].to(device)
         reference_log_probs = F.log_softmax(reference_logits.float(), dim=-1)
         reference_probs = reference_log_probs.exp()
         target_logp_b = reference_log_probs.gather(-1, target_ids[:, None]).squeeze(-1)
@@ -164,6 +183,8 @@ def score_row(
 
     out = {
         **row,
+        "scoring_observer_model": observer_model_id,
+        "scoring_reference_model": reference_model_id,
         "num_scored_tokens": int(len(target_ids)),
         "doc_scores": doc_scores,
         "token_features": token_features,
@@ -180,7 +201,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", required=True)
     parser.add_argument("--observer-model", default=None)
     parser.add_argument("--reference-model", default=None)
+    parser.add_argument(
+        "--binoculars-default-models",
+        action="store_true",
+        help=(
+            "Use upstream Binoculars defaults: performer/numerator "
+            "tiiuae/falcon-7b-instruct and observer/comparison tiiuae/falcon-7b."
+        ),
+    )
+    parser.add_argument("--trust-remote-code", action="store_true")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--reference-device", default=None)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--store-tokens", action="store_true")
     return parser.parse_args()
@@ -194,16 +225,32 @@ def main() -> None:
     if not rows:
         raise ValueError(f"no rows found in {args.input}")
 
-    observer_model_id = args.observer_model or rows[0].get("evaluator_model") or rows[0].get("generator_model")
+    if args.binoculars_default_models:
+        observer_model_id = BINOCULARS_PERFORMER_MODEL
+        reference_model_id = BINOCULARS_OBSERVER_MODEL
+        trust_remote_code = args.trust_remote_code
+    else:
+        observer_model_id = args.observer_model or rows[0].get("evaluator_model") or rows[0].get("generator_model")
+        reference_model_id = args.reference_model
+        trust_remote_code = args.trust_remote_code
+
     if observer_model_id is None:
         raise ValueError("observer model is required")
 
     device = torch.device(args.device)
-    observer_tokenizer, observer_model = load_model_and_tokenizer(observer_model_id, device)
+    reference_device = torch.device(
+        args.reference_device
+        or ("cuda:1" if args.binoculars_default_models and torch.cuda.device_count() > 1 else args.device)
+    )
+    observer_tokenizer, observer_model = load_model_and_tokenizer(observer_model_id, device, trust_remote_code)
 
     reference_model = None
-    if args.reference_model:
-        reference_tokenizer, reference_model = load_model_and_tokenizer(args.reference_model, device)
+    if reference_model_id:
+        reference_tokenizer, reference_model = load_model_and_tokenizer(
+            reference_model_id,
+            reference_device,
+            trust_remote_code,
+        )
         check_compatible_tokenizers(observer_tokenizer, reference_tokenizer)
 
     scored = []
@@ -215,7 +262,10 @@ def main() -> None:
                 observer_model,
                 reference_model,
                 device,
+                reference_device,
                 store_tokens=args.store_tokens,
+                observer_model_id=observer_model_id,
+                reference_model_id=reference_model_id,
             )
         )
         print(f"scored {idx}/{len(rows)}", flush=True)

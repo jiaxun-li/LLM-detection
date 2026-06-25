@@ -61,6 +61,44 @@ entropy_gap
 binoculars
 ```
 
+To mirror Radvand et al. Section 5.2, use the target model for
+`log_likelihood`, `rank`, `log_rank`, `LRR`, `entropy`, and `entropy_gap`.
+Use the upstream Binoculars model pair only for the `binoculars` method.
+
+Score the target-model features with:
+
+```powershell
+python score_real_text.py `
+  --input real_data/xsum/Qwen__Qwen2.5-0.5B/clean.jsonl `
+  --output real_data/xsum/Qwen__Qwen2.5-0.5B/scores_target_model/clean_scores.jsonl `
+  --observer-model Qwen/Qwen2.5-0.5B
+```
+
+Score the Binoculars features with:
+
+```powershell
+python score_real_text.py `
+  --input real_data/xsum/Qwen__Qwen2.5-0.5B/clean.jsonl `
+  --output real_data/xsum/Qwen__Qwen2.5-0.5B/scores_binoculars_falcon/clean_scores.jsonl `
+  --binoculars-default-models
+```
+
+This uses `tiiuae/falcon-7b-instruct` as the performer/numerator model and
+`tiiuae/falcon-7b` as the observer/comparison model, matching
+`ahans30/Binoculars`.
+
+Then evaluate with the target-model score files as primary inputs and the
+Falcon/Binoculars score files as Binoculars-only inputs:
+
+```powershell
+python evaluate_real_clipping.py `
+  --clean real_data/xsum/Qwen__Qwen2.5-0.5B/scores_target_model/clean_scores.jsonl `
+  --contaminated real_data/xsum/Qwen__Qwen2.5-0.5B/scores_target_model/contaminated_scores.jsonl `
+  --binoculars-clean real_data/xsum/Qwen__Qwen2.5-0.5B/scores_binoculars_falcon/clean_scores.jsonl `
+  --binoculars-contaminated real_data/xsum/Qwen__Qwen2.5-0.5B/scores_binoculars_falcon/contaminated_scores.jsonl `
+  --output-dir real_results/xsum_qwen_mirror
+```
+
 ## 4. Evaluate Raw vs Clipped Methods
 
 ```powershell

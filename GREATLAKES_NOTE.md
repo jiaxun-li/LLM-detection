@@ -113,6 +113,69 @@ contaminated_scores.jsonl   2800
 
 The script may stay quiet for a while while loading models/datasets. It prints `prepared 1/200` only after the first example is fully generated.
 
+## 5a. Run With Upstream Binoculars Models
+
+To mirror Radvand et al. Section 5.2, use the target model for the single-model methods and use the upstream Binoculars model pair only for Binoculars:
+
+```text
+log_likelihood, rank, log_rank, LRR, entropy, entropy_gap:
+  target model for that setup
+
+binoculars:
+  tiiuae/falcon-7b-instruct / tiiuae/falcon-7b
+```
+
+The upstream Binoculars implementation uses:
+
+```text
+observer/comparison model: tiiuae/falcon-7b
+performer/numerator model: tiiuae/falcon-7b-instruct
+```
+
+To run one mirrored setup, submit:
+
+```bash
+cd ~/LLM-detection
+sbatch -A stats_dept1 --time=24:00:00 \
+  --export=ALL,DATASET=xsum,MODEL_ALIAS=qwen,TARGET_MODEL=Qwen/Qwen2.5-0.5B,N_SAMPLES=200 \
+  scripts/greatlakes_mirror_detection.sbatch
+```
+
+This writes target-model score files to:
+
+```text
+real_data/<dataset>/<target_model_dir>/scores_target_model/
+```
+
+and Binoculars/Falcon score files to:
+
+```text
+real_data/<dataset>/<target_model_dir>/scores_binoculars_falcon/
+```
+
+The final mixed evaluation is written to:
+
+```text
+real_results/<dataset>_<model_alias>_mirror/
+```
+
+To submit the 3 dataset x 3 model matrix:
+
+```bash
+cd ~/LLM-detection
+ACCOUNT=stats_dept1 N_SAMPLES=200 TIME=24:00:00 bash scripts/submit_greatlakes_mirror_matrix.sh
+```
+
+The matrix script uses these paper-family model IDs by default:
+
+```text
+llama:           meta-llama/Meta-Llama-3-8B
+gpt_neox_erebus: KoboldAI/GPT-NeoX-20B-Erebus
+qwen:            Qwen/Qwen2.5-32B
+```
+
+These exact paper-scale models are much larger than the Qwen-0.5B smoke test. Llama may require Hugging Face access approval and `HF_TOKEN`; GPT-NeoX-20B and Qwen-32B may require larger GPUs or model-parallel loading beyond a 16GB V100. If Great Lakes gives OOM errors, first run the mirrored script with a smaller target model to validate the pipeline.
+
 ## 6. Check Job Status
 
 Show your active jobs:

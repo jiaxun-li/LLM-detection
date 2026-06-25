@@ -41,17 +41,32 @@ export MPLBACKEND=Agg
 DATASET="${DATASET:-xsum}"
 N_SAMPLES="${N_SAMPLES:-200}"
 GENERATOR_MODEL="${GENERATOR_MODEL:-Qwen/Qwen2.5-0.5B}"
+OBSERVER_MODEL="${OBSERVER_MODEL:-${GENERATOR_MODEL}}"
 REFERENCE_MODEL="${REFERENCE_MODEL:-Qwen/Qwen2.5-1.5B}"
+USE_BINOCULARS_DEFAULT_MODELS="${USE_BINOCULARS_DEFAULT_MODELS:-0}"
 MODEL_DIR_NAME="${GENERATOR_MODEL//\//__}"
 DATA_DIR="real_data/${DATASET}/${MODEL_DIR_NAME}"
-OUTPUT_DIR="real_results/${DATASET}_qwen"
+if [[ "${USE_BINOCULARS_DEFAULT_MODELS}" == "1" ]]; then
+  SCORE_DIR="${SCORE_DIR:-${DATA_DIR}/scores_binoculars_falcon}"
+  OUTPUT_DIR="${OUTPUT_DIR:-real_results/${DATASET}_qwen_binoculars_falcon}"
+  SCORE_MODEL_ARGS=(--binoculars-default-models)
+else
+  SCORE_DIR="${SCORE_DIR:-${DATA_DIR}}"
+  OUTPUT_DIR="${OUTPUT_DIR:-real_results/${DATASET}_qwen}"
+  SCORE_MODEL_ARGS=(--observer-model "${OBSERVER_MODEL}" --reference-model "${REFERENCE_MODEL}")
+fi
+mkdir -p "${SCORE_DIR}"
 
 echo "job_id=${SLURM_JOB_ID:-local}"
 echo "host=$(hostname)"
 echo "dataset=${DATASET}"
 echo "n_samples=${N_SAMPLES}"
 echo "generator_model=${GENERATOR_MODEL}"
+echo "observer_model=${OBSERVER_MODEL}"
 echo "reference_model=${REFERENCE_MODEL}"
+echo "use_binoculars_default_models=${USE_BINOCULARS_DEFAULT_MODELS}"
+echo "score_dir=${SCORE_DIR}"
+echo "output_dir=${OUTPUT_DIR}"
 python - <<'PY'
 import torch
 print("cuda_available=", torch.cuda.is_available())
@@ -66,17 +81,15 @@ python prepare_real_contamination.py \
 
 python score_real_text.py \
   --input "${DATA_DIR}/clean.jsonl" \
-  --output "${DATA_DIR}/clean_scores.jsonl" \
-  --observer-model "${GENERATOR_MODEL}" \
-  --reference-model "${REFERENCE_MODEL}"
+  --output "${SCORE_DIR}/clean_scores.jsonl" \
+  "${SCORE_MODEL_ARGS[@]}"
 
 python score_real_text.py \
   --input "${DATA_DIR}/contaminated.jsonl" \
-  --output "${DATA_DIR}/contaminated_scores.jsonl" \
-  --observer-model "${GENERATOR_MODEL}" \
-  --reference-model "${REFERENCE_MODEL}"
+  --output "${SCORE_DIR}/contaminated_scores.jsonl" \
+  "${SCORE_MODEL_ARGS[@]}"
 
 python evaluate_real_clipping.py \
-  --clean "${DATA_DIR}/clean_scores.jsonl" \
-  --contaminated "${DATA_DIR}/contaminated_scores.jsonl" \
+  --clean "${SCORE_DIR}/clean_scores.jsonl" \
+  --contaminated "${SCORE_DIR}/contaminated_scores.jsonl" \
   --output-dir "${OUTPUT_DIR}"
