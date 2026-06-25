@@ -82,6 +82,19 @@ def load_model_and_tokenizer(model_id: str, device: torch.device, trust_remote_c
         torch_dtype=torch.float16 if device.type == "cuda" else torch.float32,
         trust_remote_code=trust_remote_code,
     ).to(device)
+    module_name = type(model).__module__
+    if model_id.startswith("tiiuae/falcon") and "transformers_modules" in module_name:
+        raise RuntimeError(
+            "Falcon loaded from cached Hugging Face remote code instead of the "
+            "native Transformers implementation. Remove the cached module with "
+            "`rm -rf ~/.cache/huggingface/modules/transformers_modules/tiiuae` "
+            "and upgrade Transformers with `pip install -U transformers accelerate safetensors`."
+        )
+    print(
+        f"loaded model={model_id} class={type(model).__name__} module={module_name} "
+        f"device={device} trust_remote_code={trust_remote_code}",
+        flush=True,
+    )
     model.eval()
     return tokenizer, model
 
