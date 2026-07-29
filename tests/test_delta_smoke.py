@@ -34,6 +34,10 @@ class DeltaSmokeTests(unittest.TestCase):
         self.assertEqual(config["contamination"]["random_draws"], 1)
         self.assertEqual(set(config["scoring"]["detectors"]), EXPECTED_DETECTORS)
         self.assertNotIn("binoculars", config["scoring"]["detectors"])
+        self.assertEqual(config["scoring"]["saved_top_k"], 10)
+        self.assertTrue(
+            config["scoring"]["save_mean_pooled_final_hidden_state"]
+        )
         self.assertTrue(config["debug_only"])
         self.assertEqual(config["result_label"], DEBUG_LABEL)
 
@@ -44,6 +48,7 @@ class DeltaSmokeTests(unittest.TestCase):
         wrapper = Path("scripts/submit_delta_smoke.sh").read_text(
             encoding="utf-8"
         )
+        setup = Path("scripts/setup_delta_env.sh").read_text(encoding="utf-8")
         for directive in (
             "#SBATCH --partition=gpuA100x4",
             "#SBATCH --gpus-per-node=1",
@@ -59,10 +64,18 @@ class DeltaSmokeTests(unittest.TestCase):
         self.assertIn("--compare-baseline", job)
         self.assertIn("--write-completion-marker", job)
         self.assertIn("torch.cuda.is_available()", job)
+        self.assertIn('torch.version.cuda == "12.8"', job)
+        self.assertIn('PYTHON_MODULE="${PYTHON_MODULE:-miniforge3-python}"', job)
         self.assertIn("nvidia-smi", job)
         self.assertIn('account="${ACCOUNT:-}"', wrapper)
         self.assertIn("--account=", wrapper)
         self.assertIn("Refusing to overwrite completed smoke run", wrapper)
+        self.assertIn('"torch==2.11.0"', setup)
+        self.assertIn("https://download.pytorch.org/whl/cu128", setup)
+        self.assertLess(
+            setup.index('"torch==2.11.0"'),
+            setup.index("pip install -r requirements.txt"),
+        )
 
     def test_no_network_synthetic_two_pass_smoke(self) -> None:
         with tempfile.TemporaryDirectory(prefix="delta-smoke-test-") as temp:

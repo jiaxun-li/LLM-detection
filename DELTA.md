@@ -9,12 +9,8 @@ before using the paper-scale scripts below.
 ## One-time environment
 
 ```bash
-module reset
-module load python/3.11 2>/dev/null || module load python
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
+VENV_PATH="/projects/<project>/$USER/venvs/llm-detection" \
+bash scripts/setup_delta_env.sh
 ```
 
 Install vLLM only when it is compatible with Delta's active CUDA/PyTorch stack:

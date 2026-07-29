@@ -113,6 +113,16 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ValueError("generation.backend must be transformers or vllm")
     if config["scoring"].get("dtype") not in {"bf16", "fp16", "fp32"}:
         raise ValueError("scoring.dtype must be bf16, fp16, or fp32")
+    saved_top_k = int(config["scoring"].get("saved_top_k", 10))
+    if saved_top_k < 2:
+        raise ValueError("scoring.saved_top_k must be at least 2")
+    save_pooled_hidden = config["scoring"].get(
+        "save_mean_pooled_final_hidden_state", False
+    )
+    if not isinstance(save_pooled_hidden, bool):
+        raise ValueError(
+            "scoring.save_mean_pooled_final_hidden_state must be true or false"
+        )
     fprs = [float(x) for x in config["evaluation"].get("target_fprs", [])]
     if fprs != [0.01, 0.05]:
         raise ValueError("evaluation.target_fprs must be [0.01, 0.05] for the primary study")
@@ -123,4 +133,3 @@ def total_examples(config: dict[str, Any]) -> int:
         int(config["splits"][key])
         for key in ("clipping_tuning", "calibration", "test")
     )
-

@@ -29,7 +29,7 @@ FORCE="${FORCE:-0}"
 SMOKE_ROOT="$PWD/smoke_results/delta_qwen_0_5b"
 RUN_DIR="${SMOKE_ROOT}/${RUN_ID}"
 VENV_PATH="${VENV_PATH:-$PWD/.venv-delta-smoke}"
-PYTHON_MODULE="${PYTHON_MODULE:-python/3.11}"
+PYTHON_MODULE="${PYTHON_MODULE:-miniforge3-python}"
 SMOKE_CACHE_ROOT="${SMOKE_CACHE_ROOT:-${SCRATCH:-$PWD/.cache}/llm-detection-smoke}"
 FINAL_MARKER="${RUN_DIR}/smoke_validation.complete.json"
 BASELINE="${RUN_DIR}/resume_baseline.json"
@@ -103,7 +103,7 @@ echo "transformers_cache=${TRANSFORMERS_CACHE}"
 echo "torch_home=${TORCH_HOME}"
 python --version
 python -c 'import importlib.metadata as m; names=("accelerate","datasets","huggingface-hub","numpy","safetensors","torch","transformers"); print("package_versions=" + ", ".join(f"{name}={m.version(name)}" for name in names))'
-python -c 'import torch; print(f"torch={torch.__version__} cuda_runtime={torch.version.cuda} cuda_available={torch.cuda.is_available()} cuda_devices={torch.cuda.device_count()}"); assert torch.cuda.is_available() and torch.cuda.device_count() >= 1, "CUDA GPU is unavailable"; props=torch.cuda.get_device_properties(0); print(f"selected_gpu={props.name} total_memory_gib={props.total_memory / 2**30:.1f}")'
+python -c 'import torch; print(f"torch={torch.__version__} cuda_runtime={torch.version.cuda} cuda_available={torch.cuda.is_available()} cuda_devices={torch.cuda.device_count()}"); assert torch.version.cuda == "12.8", "Expected the pinned CUDA 12.8 PyTorch build"; assert torch.cuda.is_available() and torch.cuda.device_count() >= 1, "CUDA GPU is unavailable"; props=torch.cuda.get_device_properties(0); print(f"selected_gpu={props.name} total_memory_gib={props.total_memory / 2**30:.1f}")'
 nvidia-smi --query-gpu=index,uuid,name,memory.total,driver_version --format=csv
 python -c 'import json,sys; c=json.load(open(sys.argv[1], encoding="utf-8")); print("smoke_settings=" + json.dumps({"model": c["models"]["primary"], "splits": c["splits"], "generation": c["generation"], "contamination": c["contamination"], "detectors": c["scoring"]["detectors"], "evaluation": c["evaluation"]}, sort_keys=True))' "${CONFIG}"
 

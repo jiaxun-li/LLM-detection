@@ -32,7 +32,16 @@ EXPECTED_DETECTORS = {
     "entropy",
     "entropy_gap",
 }
-TOKEN_FEATURES = {"logp", "rank", "log_rank", "entropy"}
+TOKEN_FEATURES = {
+    "logp",
+    "rank",
+    "log_rank",
+    "entropy",
+    "top_k_token_ids",
+    "top_k_logprobs",
+    "top1_top2_logprob_margin",
+    "target_top1_logprob_margin",
+}
 DEBUG_LABEL = "SMOKE_TEST_DEBUG_ONLY_NOT_FOR_SCIENTIFIC_USE"
 
 
@@ -395,6 +404,71 @@ def validate_smoke_run(
             feature_length == int(row["num_scored_tokens"]) and feature_length > 0,
             "num_scored_tokens does not match token-feature arrays",
         )
+        top_k = int(config["scoring"]["saved_top_k"])
+        for token_index in range(feature_length):
+            top_ids = features["top_k_token_ids"][token_index]
+            top_logprobs = features["top_k_logprobs"][token_index]
+            _require(
+                len(top_ids) == top_k
+                and len(set(top_ids)) == top_k
+                and len(top_logprobs) == top_k,
+                "top-k token features have an incorrect width or duplicate IDs",
+            )
+            _require(
+                all(
+                    math.isfinite(float(value))
+                    for value in top_logprobs
+                )
+                and all(
+                    float(top_logprobs[index])
+                    >= float(top_logprobs[index + 1])
+                    for index in range(top_k - 1)
+                ),
+                "top-k log-probabilities are non-finite or not sorted",
+            )
+            top_margin = float(
+                features["top1_top2_logprob_margin"][token_index]
+            )
+            target_margin = float(
+                features["target_top1_logprob_margin"][token_index]
+            )
+            _require(
+                math.isclose(
+                    top_margin,
+                    float(top_logprobs[0]) - float(top_logprobs[1]),
+                    rel_tol=1e-5,
+                    abs_tol=1e-5,
+                )
+                and math.isclose(
+                    target_margin,
+                    float(features["logp"][token_index])
+                    - float(top_logprobs[0]),
+                    rel_tol=1e-5,
+                    abs_tol=1e-5,
+                )
+                and top_margin >= -1e-6
+                and target_margin <= 1e-6,
+                "saved probability margins are inconsistent",
+            )
+        _require(
+            row.get("scoring_model_revision")
+            and row.get("scoring_tokenizer_revision")
+            and row.get("scoring_feature_schema") == "target-token-features-v2",
+            "score feature schema or resolved model/tokenizer revision is missing",
+        )
+        if config["scoring"]["save_mean_pooled_final_hidden_state"]:
+            document_features = row.get("document_features", {})
+            pooled = document_features.get(
+                "mean_pooled_final_hidden_state", []
+            )
+            _require(
+                pooled
+                and len(pooled) == int(document_features.get("hidden_size", 0))
+                and int(document_features.get("pooling_token_count", 0))
+                == feature_length
+                and all(math.isfinite(float(value)) for value in pooled),
+                "mean-pooled final hidden state is missing or invalid",
+            )
         _require(
             "lrr" in row["doc_scores"]
             and math.isfinite(float(row["doc_scores"]["lrr"])),
@@ -474,6 +548,13 @@ def validate_smoke_run(
     )
 
     _require(manifest["target_model"] == MODEL_ID, "manifest target model is incorrect")
+    _require(
+        manifest.get("target_model_resolved_revision")
+        and manifest.get("target_tokenizer_resolved_revision")
+        and manifest.get("target_score_feature_schema")
+        == "target-token-features-v2",
+        "manifest lacks resolved scoring revisions or feature schema",
+    )
     _require(
         manifest.get("dataset", {}).get("name") == "xsum",
         "manifest dataset is not XSum",

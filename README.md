@@ -86,6 +86,20 @@ Repeated SQuAD contexts are deduplicated; short unique passages are packed
 deterministically without reuse before source IDs are assigned, ensuring the
 30+220 token construction has enough target-independent source text.
 
+Each target-score row uses the versioned `target-token-features-v2` schema. It
+keeps per-token log-probability, exact rank, log-rank, and entropy and also saves
+the configured top-k token IDs/log-probabilities, the top-1 versus top-2
+log-probability margin, and the observed target versus top-1 margin. The default
+is `scoring.saved_top_k: 10`. Full-vocabulary logits are deliberately not
+persisted.
+
+`scoring.save_mean_pooled_final_hidden_state` optionally adds one mean-pooled
+final-layer vector per document. It is disabled for paper runs by default
+because it increases forward-pass memory and output size; the dedicated Delta
+smoke configuration enables it to exercise the code path. Score rows and the
+run manifest retain resolved model and tokenizer commit revisions so a
+specialized feature can be reproduced later.
+
 The tidy metrics CSV contains calibrated thresholds, actual FPR, TPR at
 calibrated 1% and 5% FPR, AUROC, normalized partial AUROC over 0–5% FPR, paired
 clipped-minus-raw differences, robustness AUC, clustered bootstrap intervals,

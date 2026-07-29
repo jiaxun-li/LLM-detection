@@ -50,6 +50,7 @@ No requested requirement is intentionally omitted or blocked.
 | Batch/microbatch/dtype/device/map/TP/max tokens/revisions | JSON configs, loaders | Config validation passes |
 | One target forward supplies six detectors | `TargetModelScorer.score_batch` | Feature set/formulas tested; forward awaiting Delta |
 | Exact rank and entropy with memory-aware vocab chunks | `exact_token_features` | NumPy exact reference tested; Torch/CUDA parity awaiting Delta |
+| Compact reusable top-k/margin features and optional pooled hidden state | `exact_token_features`, `TargetModelScorer`, scoring config | NumPy/Torch parity and pooled-hidden unit test; dedicated GPU smoke awaiting rerun |
 | Falcon pair on separate GPUs and explicit formula | `BinocularsScorer` | Formula tested; placement awaiting Delta |
 | Streaming where practical | streaming dataset selection/JSONL scoring and append outputs | Partial/restart tests pass |
 | Restart, completed keys, partial line repair, completion markers | `llm_detection/io.py`, pipeline markers | `tests/test_io.py` |

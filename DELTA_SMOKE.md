@@ -5,25 +5,29 @@ Delta. It uses `Qwen/Qwen2.5-0.5B`, 12 XSum validation documents, one A100 GPU,
 and the six target-model detectors. It does **not** run Binoculars or Falcon and
 must not be used as a scientific result.
 
+The smoke also validates the compact `target-token-features-v2` score schema:
+top-10 token IDs/log-probabilities, probability margins, and the optional
+mean-pooled final hidden state. The paper configuration leaves pooled hidden
+states disabled unless explicitly requested.
+
 The job is not submitted automatically. Run the commands below from an
 authorized Delta login session.
 
 ## One-time environment setup
 
-From the repository root, choose a Python module available on Delta and create
-a dedicated virtual environment. The job defaults to `python/3.11`; set
-`PYTHON_MODULE` and use that same module here if your Delta environment exposes
-a different name.
+From the repository root, create a dedicated virtual environment on project
+storage. The setup script defaults to Delta's `miniforge3-python` module and
+pins the working PyTorch 2.11.0 CUDA 12.8 wheel before installing the remaining
+requirements. This prevents a later requirements install from selecting the
+incompatible CUDA 13 wheel.
 
 ```bash
-module reset
-module load python/3.11
-python -m venv "$PWD/.venv-delta-smoke"
-source "$PWD/.venv-delta-smoke/bin/activate"
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-python -c 'import accelerate,datasets,huggingface_hub,numpy,safetensors,torch,transformers; print(torch.__version__, torch.version.cuda)'
+VENV_PATH="/projects/<project>/$USER/venvs/delta-smoke" \
+bash scripts/setup_delta_env.sh
 ```
+
+An existing environment that already reports `2.11.0+cu128` does not need to
+be recreated.
 
 Put model and dataset caches on a project or scratch filesystem with adequate
 quota. For example:

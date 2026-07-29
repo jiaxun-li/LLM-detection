@@ -75,7 +75,9 @@
     "device_map": null,
     "max_tokens": 128,
     "length_bucket_width": 16,
-    "vocab_chunk_size": 4096
+    "vocab_chunk_size": 4096,
+    "saved_top_k": 10,
+    "save_mean_pooled_final_hidden_state": true
   },
   "evaluation": {
     "target_fprs": [0.01, 0.05],

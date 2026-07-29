@@ -21,15 +21,19 @@ RUN_ID="${RUN_ID:-delta-${SLURM_JOB_ID}-${DATASET}-${TARGET_MODEL//\//__}}"
 GENERATION_BACKEND="${GENERATION_BACKEND:-transformers}"
 TENSOR_PARALLEL_SIZE="${TENSOR_PARALLEL_SIZE:-${SLURM_GPUS_ON_NODE:-4}}"
 SKIP_BINOCULARS="${SKIP_BINOCULARS:-0}"
+PYTHON_MODULE="${PYTHON_MODULE:-miniforge3-python}"
+VENV_PATH="${VENV_PATH:-$PWD/.venv}"
 
 mkdir -p logs
 module reset
-module load python/3.11 2>/dev/null || module load python
-if [[ ! -d .venv ]]; then
-  echo "Missing .venv. Create it on a Delta login node and install requirements.txt." >&2
+module load "${PYTHON_MODULE}"
+if [[ ! -f "${VENV_PATH}/bin/activate" ]]; then
+  echo "Missing virtual environment: ${VENV_PATH}" >&2
+  echo "Create it with scripts/setup_delta_env.sh." >&2
   exit 2
 fi
-source .venv/bin/activate
+source "${VENV_PATH}/bin/activate"
+python -c 'import torch; print(f"torch={torch.__version__} cuda_runtime={torch.version.cuda} cuda_available={torch.cuda.is_available()}"); assert torch.version.cuda == "12.8" and torch.cuda.is_available(), "Expected the working Delta CUDA 12.8 environment"'
 
 export HF_HOME="${HF_HOME:-$PWD/.cache/huggingface}"
 export HF_DATASETS_CACHE="${HF_DATASETS_CACHE:-$HF_HOME/datasets}"
@@ -60,4 +64,3 @@ if [[ "${SKIP_BINOCULARS}" == "1" ]]; then
 fi
 
 srun python -u run_experiment.py "${ARGS[@]}"
-

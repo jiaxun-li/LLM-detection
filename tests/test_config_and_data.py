@@ -48,6 +48,10 @@ class ConfigAndDataTests(unittest.TestCase):
             [0.0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5],
         )
         self.assertIn("lrr", config["scoring"]["detectors"])
+        self.assertEqual(config["scoring"]["saved_top_k"], 10)
+        self.assertFalse(
+            config["scoring"]["save_mean_pooled_final_hidden_state"]
+        )
 
     def test_splits_are_deterministic_disjoint_and_seeds_divide_total(self) -> None:
         sources = [

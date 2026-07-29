@@ -111,19 +111,42 @@ def _score_row(row: dict[str, Any], local_index: int) -> dict[str, Any]:
     rank = [rank_value] * 8
     log_rank = [math.log(rank_value)] * 8
     entropy = [max(0.1, 2.8 - quality + offset * 0.005) for offset in range(8)]
+    top_k_token_ids = [
+        [100 + token_index * 10 + rank for rank in range(10)]
+        for token_index in range(8)
+    ]
+    top_k_logprobs = [
+        [logp[token_index] + 0.2 - rank * 0.1 for rank in range(10)]
+        for token_index in range(8)
+    ]
     features = {
         "logp": logp,
         "rank": rank,
         "log_rank": log_rank,
         "entropy": entropy,
+        "top_k_token_ids": top_k_token_ids,
+        "top_k_logprobs": top_k_logprobs,
+        "top1_top2_logprob_margin": [0.1] * 8,
+        "target_top1_logprob_margin": [-0.2] * 8,
     }
     return {
         **row,
         "scoring_model": MODEL_ID,
         "scoring_model_revision": "synthetic-model-revision",
         "scoring_tokenizer_revision": "synthetic-tokenizer-revision",
+        "scoring_feature_schema": "target-token-features-v2",
         "num_scored_tokens": 8,
         "token_features": features,
+        "document_features": {
+            "mean_pooled_final_hidden_state": [
+                quality,
+                quality + 0.1,
+                quality + 0.2,
+                quality + 0.3,
+            ],
+            "pooling_token_count": 8,
+            "hidden_size": 4,
+        },
         "doc_scores": single_model_doc_scores(features),
     }
 
@@ -218,6 +241,8 @@ def main() -> None:
         "dataset": {"name": "xsum"},
         "target_model": MODEL_ID,
         "target_model_resolved_revision": "synthetic-model-revision",
+        "target_tokenizer_resolved_revision": "synthetic-tokenizer-revision",
+        "target_score_feature_schema": "target-token-features-v2",
         "source_sample_manifest": str(source_path),
         "completion_status": "complete",
         "completed_stages": ["prepare", "score", "evaluate"],

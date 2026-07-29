@@ -17,7 +17,11 @@ from .runtime import Throughput, peak_gpu_memory_bytes
 EPS = 1e-12
 
 
-def numpy_exact_token_features(logits: np.ndarray, target_ids: np.ndarray) -> dict[str, np.ndarray]:
+def numpy_exact_token_features(
+    logits: np.ndarray,
+    target_ids: np.ndarray,
+    saved_top_k: int = 0,
+) -> dict[str, np.ndarray]:
     """Reference implementation used by unit tests.
 
     Ties receive the same one-based competition rank: ``1 + count(logit >
@@ -34,23 +38,43 @@ def numpy_exact_token_features(logits: np.ndarray, target_ids: np.ndarray) -> di
     logp = target_logits - log_z
     rank = 1 + (values > target_logits[:, None]).sum(axis=-1)
     entropy = -(probabilities * np.log(probabilities)).sum(axis=-1)
-    return {
+    result = {
         "logp": logp,
         "rank": rank,
         "log_rank": np.log(rank),
         "entropy": entropy,
     }
+    if saved_top_k:
+        top_k = min(max(int(saved_top_k), 1), values.shape[-1])
+        if top_k < 2:
+            raise ValueError("saved_top_k requires a model vocabulary of at least 2")
+        top_ids = np.argsort(-values, axis=-1, kind="stable")[:, :top_k]
+        top_logits = np.take_along_axis(values, top_ids, axis=-1)
+        result.update(
+            {
+                "top_k_token_ids": top_ids,
+                "top_k_logprobs": top_logits - log_z[:, None],
+                "top1_top2_logprob_margin": top_logits[:, 0] - top_logits[:, 1],
+                # Zero means the observed token was a top-1 prediction. More
+                # negative values indicate a larger gap below the top choice.
+                "target_top1_logprob_margin": target_logits - top_logits[:, 0],
+            }
+        )
+    return result
 
 
 def exact_token_features(
     logits: Any,
     target_ids: Any,
     vocab_chunk_size: int,
+    saved_top_k: int = 0,
 ) -> dict[str, Any]:
-    """Compute log-probability, exact rank, log-rank, and entropy.
+    """Compute exact token statistics and an optional compact top-k feature pack.
 
     Vocabulary chunks bound temporary memory without approximate top-k ranks or
     truncated entropy. The model's logits are reused for every target detector.
+    ``target_top1_logprob_margin`` is target log-probability minus top-1
+    log-probability, so it is non-positive and equals zero for a top-1 target.
     """
     torch = _torch()
     targets = target_ids.long()
@@ -68,12 +92,28 @@ def exact_token_features(
     for start in range(0, logits.shape[-1], width):
         chunk = logits[:, start : start + width].float()
         expected_logit += (torch.exp(chunk - log_z[:, None]) * chunk).sum(dim=-1)
-    return {
+    result = {
         "logp": target_logits - log_z,
         "rank": rank,
         "log_rank": torch.log(rank.float()),
         "entropy": log_z - expected_logit,
     }
+    if saved_top_k:
+        top_k = min(max(int(saved_top_k), 1), int(logits.shape[-1]))
+        if top_k < 2:
+            raise ValueError("saved_top_k requires a model vocabulary of at least 2")
+        top_logits, top_ids = torch.topk(
+            logits.float(), k=top_k, dim=-1, largest=True, sorted=True
+        )
+        result.update(
+            {
+                "top_k_token_ids": top_ids,
+                "top_k_logprobs": top_logits - log_z[:, None],
+                "top1_top2_logprob_margin": top_logits[:, 0] - top_logits[:, 1],
+                "target_top1_logprob_margin": target_logits - top_logits[:, 0],
+            }
+        )
+    return result
 
 
 def binoculars_score(mean_performer_nll: float, mean_observer_to_performer_xent: float) -> float:
@@ -272,8 +312,45 @@ class TargetModelScorer:
     def token_count(self, row: dict[str, Any]) -> int:
         return len(self.tokenizer.encode(row["prompt"] + row["text"], add_special_tokens=False))
 
+    def validate_existing_row(self, row: dict[str, Any]) -> None:
+        """Refuse to append a new feature schema or model revision to an old run."""
+        if row.get("scoring_feature_schema") != "target-token-features-v2":
+            raise ValueError(
+                "existing target score rows use a different feature schema; "
+                "choose a new run ID"
+            )
+        if (
+            row.get("scoring_model_revision") != self.resolved_revision
+            or row.get("scoring_tokenizer_revision")
+            != self.resolved_tokenizer_revision
+        ):
+            raise ValueError(
+                "existing target score rows use different resolved model/tokenizer "
+                "revisions; choose a new run ID"
+            )
+        features = row.get("token_features", {})
+        top_ids = features.get("top_k_token_ids", [])
+        expected_top_k = int(self.config.get("saved_top_k", 10))
+        if not top_ids or any(len(token_ids) != expected_top_k for token_ids in top_ids):
+            raise ValueError(
+                "existing target score rows use a different saved_top_k; "
+                "choose a new run ID"
+            )
+        expected_pooled = bool(
+            self.config.get("save_mean_pooled_final_hidden_state", False)
+        )
+        if ("document_features" in row) != expected_pooled:
+            raise ValueError(
+                "existing target score rows use a different pooled-hidden-state "
+                "setting; choose a new run ID"
+            )
+
     def score_batch(self, rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
         torch = _torch()
+        saved_top_k = int(self.config.get("saved_top_k", 10))
+        save_pooled_hidden = bool(
+            self.config.get("save_mean_pooled_final_hidden_state", False)
+        )
         encoded = [
             _encode_row(self.tokenizer, row, int(self.config["max_tokens"]))
             for row in rows
@@ -281,7 +358,21 @@ class TargetModelScorer:
         input_ids, attention = _padded_batch(self.tokenizer, encoded, self.device)
         with torch.inference_mode():
             # This is the sole target-model forward for all single-model features.
-            batch_logits = self.model(input_ids=input_ids, attention_mask=attention).logits[:, :-1, :]
+            model_outputs = self.model(
+                input_ids=input_ids,
+                attention_mask=attention,
+                output_hidden_states=save_pooled_hidden,
+                return_dict=True,
+            )
+            batch_logits = model_outputs.logits[:, :-1, :]
+            batch_final_hidden = (
+                model_outputs.hidden_states[-1]
+                if save_pooled_hidden
+                else None
+            )
+            # Drop references to all intermediate hidden-state tensors. Only the
+            # final layer remains live when optional pooling is enabled.
+            del model_outputs
         outputs = []
         for index, (row, (_, start, length)) in enumerate(zip(rows, encoded)):
             logits = batch_logits[index, start : start + length]
@@ -290,23 +381,39 @@ class TargetModelScorer:
                 logits,
                 targets,
                 int(self.config["vocab_chunk_size"]),
+                saved_top_k,
             )
             features = {
                 name: values.detach().cpu().tolist()
                 for name, values in tensor_features.items()
             }
-            outputs.append(
-                {
-                    **row,
-                    "scoring_model": self.model_id,
-                    "scoring_model_revision": self.resolved_revision,
-                    "scoring_tokenizer_revision": self.resolved_tokenizer_revision,
-                    "num_scored_tokens": length,
-                    "token_features": features,
-                    "doc_scores": single_model_doc_scores(features),
+            scored_row = {
+                **row,
+                "scoring_model": self.model_id,
+                "scoring_model_revision": self.resolved_revision,
+                "scoring_tokenizer_revision": self.resolved_tokenizer_revision,
+                "scoring_feature_schema": "target-token-features-v2",
+                "num_scored_tokens": length,
+                "token_features": features,
+                "doc_scores": single_model_doc_scores(features),
+            }
+            if batch_final_hidden is not None:
+                pooled = (
+                    batch_final_hidden[index, start : start + length]
+                    .float()
+                    .mean(dim=0)
+                )
+                scored_row["document_features"] = {
+                    "mean_pooled_final_hidden_state": pooled.detach()
+                    .cpu()
+                    .tolist(),
+                    "pooling_token_count": length,
+                    "hidden_size": int(pooled.numel()),
                 }
-            )
+            outputs.append(scored_row)
         del batch_logits
+        if batch_final_hidden is not None:
+            del batch_final_hidden
         return outputs
 
 
@@ -417,6 +524,10 @@ def score_jsonl(
 ) -> int:
     """Stream rows, length-bucket them, microbatch, and resume by complete row key."""
     completed = completed_keys(output_path, data_row_key)
+    validate_existing = getattr(scorer, "validate_existing_row", None)
+    if validate_existing is not None:
+        for existing_row in iter_jsonl(output_path):
+            validate_existing(existing_row)
     pending = (row for row in iter_jsonl(input_path) if data_row_key(row) not in completed)
     total = sum(1 for _ in iter_jsonl(input_path))
     progress = Throughput(total, "scoring")

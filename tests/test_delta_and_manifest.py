@@ -57,6 +57,10 @@ class DeltaAndManifestTests(unittest.TestCase):
             "completion_status",
         ):
             self.assertIn(key, manifest)
+        self.assertEqual(manifest["scoring"]["saved_top_k"], 10)
+        self.assertFalse(
+            manifest["scoring"]["save_mean_pooled_final_hidden_state"]
+        )
 
 
 if __name__ == "__main__":

@@ -126,6 +126,9 @@ def main() -> None:
                 manifest["target_tokenizer_resolved_revision"] = first_target.get(
                     "scoring_tokenizer_revision"
                 )
+                manifest["target_score_feature_schema"] = first_target.get(
+                    "scoring_feature_schema"
+                )
                 if "binoculars_scores" in outputs:
                     first_pair = next(iter_jsonl(outputs["binoculars_scores"]))
                     manifest["binoculars_resolved_revisions"] = {
