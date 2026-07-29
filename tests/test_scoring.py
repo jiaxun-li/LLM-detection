@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import math
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -11,6 +13,7 @@ from llm_detection.scoring import (
     exact_token_features,
     numpy_cross_entropy,
     numpy_exact_token_features,
+    score_jsonl,
     single_model_doc_scores,
     TargetModelScorer,
 )
@@ -18,6 +21,34 @@ from llm_detection.generation import length_bucketed
 
 
 class ExactScoringTests(unittest.TestCase):
+    def test_first_scoring_run_allows_missing_output_file(self) -> None:
+        class EmptyScorer:
+            def validate_existing_row(self, _row):
+                raise AssertionError("there are no existing rows to validate")
+
+            def token_count(self, _row):
+                return 0
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            input_path = directory / "input.jsonl"
+            output_path = directory / "new-output.jsonl"
+            input_path.write_text("", encoding="utf-8")
+
+            count = score_jsonl(
+                input_path,
+                output_path,
+                EmptyScorer(),
+                {
+                    "batch_size": 1,
+                    "microbatch_size": 1,
+                    "length_bucket_width": 1,
+                },
+            )
+
+            self.assertEqual(count, 0)
+            self.assertTrue(output_path.exists())
+
     def test_length_buckets_are_bounded_and_lossless(self) -> None:
         items = list(range(17))
         batches = list(length_bucketed(items, lambda value: value, 3, 4))

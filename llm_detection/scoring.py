@@ -525,7 +525,7 @@ def score_jsonl(
     """Stream rows, length-bucket them, microbatch, and resume by complete row key."""
     completed = completed_keys(output_path, data_row_key)
     validate_existing = getattr(scorer, "validate_existing_row", None)
-    if validate_existing is not None:
+    if validate_existing is not None and Path(output_path).exists():
         for existing_row in iter_jsonl(output_path):
             validate_existing(existing_row)
     pending = (row for row in iter_jsonl(input_path) if data_row_key(row) not in completed)
