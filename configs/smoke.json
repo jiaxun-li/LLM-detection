@@ -1,0 +1,116 @@
+{
+  "experiment_name": "robust-llm-detection-smoke",
+  "datasets": {
+    "xsum": {
+      "id": "EdinburghNLP/xsum",
+      "config": null,
+      "split": "validation",
+      "revision": null,
+      "text_fields": ["document"],
+      "id_fields": ["id"],
+      "minimum_source_words": 260,
+      "pack_short_documents": false
+    },
+    "squad": {
+      "id": "rajpurkar/squad",
+      "config": null,
+      "split": "train",
+      "revision": null,
+      "text_fields": ["context"],
+      "id_fields": ["id"],
+      "minimum_source_words": 260,
+      "pack_short_documents": true
+    },
+    "writingprompts": {
+      "id": "euclaise/writingprompts",
+      "config": null,
+      "split": "validation",
+      "revision": null,
+      "text_fields": ["story", "text", "completion"],
+      "id_fields": ["id", "prompt_id"],
+      "minimum_source_words": 260,
+      "pack_short_documents": false
+    }
+  },
+  "models": {
+    "primary": ["Qwen/Qwen2.5-0.5B"],
+    "replication": [],
+    "qwen_scaling": [],
+    "revision": null,
+    "tokenizer_revision": null,
+    "binoculars": {
+      "performer": "tiiuae/falcon-7b-instruct",
+      "performer_revision": null,
+      "observer": "tiiuae/falcon-7b",
+      "observer_revision": null,
+      "performer_device": "cuda:0",
+      "observer_device": "cuda:1"
+    }
+  },
+  "splits": {
+    "clipping_tuning": 4,
+    "calibration": 4,
+    "test": 8,
+    "selection_seed": 1731
+  },
+  "generation": {
+    "backend": "transformers",
+    "seeds": [101, 202, 303],
+    "prompt_tokens": 30,
+    "continuation_tokens": 220,
+    "max_new_tokens": 220,
+    "min_new_tokens": 210,
+    "temperature": 0.8,
+    "top_p": 0.95,
+    "batch_size": 2,
+    "checkpoint_examples": 8,
+    "length_bucket_width": 32,
+    "dtype": "fp32",
+    "device": "cpu",
+    "device_map": null,
+    "tensor_parallel_size": 1
+  },
+  "contamination": {
+    "ratios": [0.0, 0.1, 0.5],
+    "random_draws": 1,
+    "corruption_seed": 99173,
+    "tail_model_revision": null,
+    "max_length_delta_tokens": 4
+  },
+  "scoring": {
+    "detectors": [
+      "log_likelihood",
+      "rank",
+      "log_rank",
+      "lrr",
+      "entropy",
+      "entropy_gap",
+      "binoculars"
+    ],
+    "batch_size": 2,
+    "microbatch_size": 2,
+    "dtype": "fp32",
+    "device": "cpu",
+    "device_map": null,
+    "max_tokens": 512,
+    "length_bucket_width": 32,
+    "vocab_chunk_size": 1024
+  },
+  "evaluation": {
+    "target_fprs": [0.01, 0.05],
+    "partial_auroc_max_fpr": 0.05,
+    "tuning_mixture": {
+      "modes": ["random", "tail"],
+      "ratios": [0.1, 0.5]
+    },
+    "oracle_mode_specific_clipping": false,
+    "bootstrap_repetitions": 50,
+    "bootstrap_seed": 481516,
+    "clipping_quantiles": [0.8, 0.9, 0.95]
+  },
+  "paths": {
+    "source_manifests": "runs/source_manifests",
+    "runs": "runs",
+    "results": "results"
+  }
+}

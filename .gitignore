@@ -1,0 +1,17 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+
+.venv/
+venv/
+.cache/
+logs/
+runs/
+results/
+smoke_results/
+
+# Keep generated results local unless intentionally publishing a frozen run.
+real_data/
+real_results/
+greatlake/
+plots/

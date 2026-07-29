@@ -1,1 +1,105 @@
-Experiment setup for LLM detection
+# Robust LLM Detection Under Human-Text Contamination
+
+This repository implements a configuration-first, restartable experiment for
+comparing raw token aggregation with one-sided clipped aggregation under random
+and white-box tail human-text contamination. The primary protocol targets an
+ICLR/AISTATS-quality study across XSum, SQuAD, and WritingPrompts.
+
+The saved files under `real_data/`, `real_results/`, and `greatlake/` are
+preserved historical smoke outputs. They predate the independent three-split
+protocol and must not be reported as final results.
+
+## Paper design
+
+The paper configuration is [`configs/paper.json`](configs/paper.json). It
+records:
+
+- 500 clipping-tuning, 500 human calibration, and 2,000 final-test source IDs;
+- three generation seeds that partition those 3,000 IDs;
+- a 30-token prompt, about 220 continuation tokens, temperature 0.8, top-p 0.95;
+- random and white-box tail contamination at 0%, 5%, 10%, 20%, 30%, 40%, and
+  50%, with three random corruption draws;
+- Llama 3.1 8B, Mistral Small 24B, and Qwen 2.5 32B primary targets;
+- the GPT-NeoX Erebus replication and Qwen 7B/14B/32B/72B scaling models;
+- target-model log likelihood, rank, log rank, DetectLLM LRR, entropy, and
+  entropy gap, plus the Falcon performer/observer Binoculars pair.
+
+[`configs/smoke.json`](configs/smoke.json) reduces split sizes, corruption
+draws, bootstrap repetitions, and model size without changing the protocol.
+
+## Entry point
+
+One task handles one dataset × target model:
+
+```bash
+python run_experiment.py \
+  --config configs/smoke.json \
+  --dataset xsum \
+  --model Qwen/Qwen2.5-0.5B \
+  --run-id smoke-xsum-qwen \
+  --stage all
+```
+
+The stages can also be resumed independently:
+
+```bash
+python run_experiment.py --config configs/smoke.json --dataset xsum \
+  --model Qwen/Qwen2.5-0.5B --run-id smoke-xsum-qwen --stage prepare
+python run_experiment.py --config configs/smoke.json --dataset xsum \
+  --model Qwen/Qwen2.5-0.5B --run-id smoke-xsum-qwen --stage score
+python run_experiment.py --config configs/smoke.json --dataset xsum \
+  --model Qwen/Qwen2.5-0.5B --run-id smoke-xsum-qwen --stage evaluate
+```
+
+`prepare_real_contamination.py`, `score_real_text.py`, and
+`evaluate_real_clipping.py` remain as aliases for these three stages. They now
+accept the configuration-first arguments above; the old prototype flags are no
+longer supported.
+
+Do not run `--stage all` locally unless model and dataset downloads are
+intentional. The automated tests need no downloads:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+## Output layout and restart behavior
+
+Each run writes:
+
+```text
+runs/source_manifests/<dataset>-<split>-<count>-seed<seed>-<signature>.jsonl
+runs/<run-id>/manifest.json
+runs/<run-id>/base_generations.jsonl
+runs/<run-id>/tail_candidate_cache.jsonl
+runs/<run-id>/data.jsonl
+runs/<run-id>/target_scores.jsonl
+runs/<run-id>/binoculars_scores.jsonl
+results/<run-id>/metrics.csv
+```
+
+Source manifests are model-independent, so every target model uses identical
+source/sample IDs and split labels. JSONL stages append complete fsynced records,
+repair only an interrupted final line, index completed provenance keys, and
+write completion markers only after row-count/uniqueness validation.
+Repeated SQuAD contexts are deduplicated; short unique passages are packed
+deterministically without reuse before source IDs are assigned, ensuring the
+30+220 token construction has enough target-independent source text.
+
+The tidy metrics CSV contains calibrated thresholds, actual FPR, TPR at
+calibrated 1% and 5% FPR, AUROC, normalized partial AUROC over 0–5% FPR, paired
+clipped-minus-raw differences, robustness AUC, clustered bootstrap intervals,
+sample counts, contamination provenance, model revisions, and frozen clipping
+specifications.
+
+## NCSA Delta
+
+See [`DELTA.md`](DELTA.md). The normal job uses `gpuA100x4`; `gpuH200x8` is an
+explicit opt-in for confirmed large-model runs such as Qwen 72B.
+
+Before any matrix work, use the isolated one-GPU Qwen 0.5B gate in
+[`DELTA_SMOKE.md`](DELTA_SMOKE.md). It has an account-aware submission wrapper,
+strict output validation, and a mandatory duplicate-free resume pass.
+
+Implementation status is audited in
+[`REQUIREMENT_CHECKLIST.md`](REQUIREMENT_CHECKLIST.md).

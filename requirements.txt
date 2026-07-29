@@ -1,5 +1,10 @@
-datasets
-matplotlib
-numpy
-torch
-transformers
+accelerate>=1.0
+datasets>=3.0
+huggingface-hub>=0.27
+numpy>=1.26
+safetensors>=0.4
+torch>=2.5
+transformers>=4.48
+
+# Optional generation accelerator on supported Linux/CUDA hosts:
+# vllm>=0.7
