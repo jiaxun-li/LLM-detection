@@ -19,13 +19,20 @@ records:
 - a 30-token prompt, about 220 continuation tokens, temperature 0.8, top-p 0.95;
 - random and white-box tail contamination at 0%, 5%, 10%, 20%, 30%, 40%, and
   50%, with three random corruption draws;
-- Llama 3.1 8B, Mistral Small 24B, and Qwen 2.5 32B primary targets;
+- a maximum decode/re-tokenize length drift of eight tokens, validated on the
+  Delta pilot with a mean absolute drift below one token;
+- Granite 3.3 8B Base, Mistral Small 24B, and Qwen 2.5 32B primary targets;
 - the GPT-NeoX Erebus replication and Qwen 7B/14B/32B/72B scaling models;
 - target-model log likelihood, rank, log rank, DetectLLM LRR, entropy, and
   entropy gap, plus the Falcon performer/observer Binoculars pair.
 
 [`configs/smoke.json`](configs/smoke.json) reduces split sizes, corruption
 draws, bootstrap repetitions, and model size without changing the protocol.
+
+Granite 3.3 8B Base replaces the originally planned Llama 3.1 8B target so the
+primary study remains reproducible without provider-specific geographic access
+approval. The replacement preserves the approximately 8B base-model scale and
+adds a public Apache-2.0 model from a distinct model family.
 
 ## Entry point
 

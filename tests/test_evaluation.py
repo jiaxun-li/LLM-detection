@@ -6,10 +6,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import numpy as np
+
 from llm_detection.config import load_config, resolved_run_config
 from llm_detection.evaluation import (
     auroc,
     calibration_threshold,
+    compact_evaluation_row,
     evaluate,
     partial_auroc,
 )
@@ -75,6 +78,51 @@ def binoculars_row(row):
 
 
 class EvaluationProtocolTests(unittest.TestCase):
+    def test_compact_evaluation_row_discards_saved_feature_pack_bulk(self) -> None:
+        row = {
+            "dataset": "xsum",
+            "target_model": "model",
+            "sample_id": "sample",
+            "split": "test",
+            "label": "llm",
+            "contamination_mode": "none",
+            "requested_contamination_ratio": 0.0,
+            "text": "large scored document",
+            "prompt": "large generation prompt",
+            "doc_scores": {"log_likelihood": -1.0},
+            "token_features": {
+                "logp": [-1.0, -2.0],
+                "rank": [1, 2],
+                "log_rank": [0.0, 0.7],
+                "entropy": [1.5, 1.6],
+                "top_k_token_ids": [[1, 2], [3, 4]],
+                "top_k_logprobs": [[-0.1, -0.2], [-0.3, -0.4]],
+                "top1_top2_logprob_margin": [0.1, 0.1],
+                "target_top1_logprob_margin": [-0.9, -1.7],
+            },
+            "document_features": {
+                "mean_pooled_final_hidden_state": [0.1] * 16
+            },
+        }
+
+        compact = compact_evaluation_row(row)
+
+        self.assertNotIn("text", compact)
+        self.assertNotIn("prompt", compact)
+        self.assertNotIn("document_features", compact)
+        self.assertEqual(
+            set(compact["token_features"]),
+            {"logp", "rank", "log_rank", "entropy"},
+        )
+        self.assertTrue(
+            all(
+                isinstance(values, np.ndarray)
+                and values.dtype == np.float64
+                for values in compact["token_features"].values()
+            )
+        )
+        self.assertEqual(compact["doc_scores"], row["doc_scores"])
+
     def test_metric_primitives(self) -> None:
         self.assertEqual(auroc([0, 1], [2, 3]), 1.0)
         self.assertEqual(auroc([0, 1], [1, 2]), 0.875)

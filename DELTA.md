@@ -19,9 +19,9 @@ Install vLLM only when it is compatible with Delta's active CUDA/PyTorch stack:
 python -m pip install 'vllm>=0.7'
 ```
 
-For gated Llama weights, arrange Hugging Face access and export `HF_TOKEN` in
-the submission environment. Keep the cache on a project or scratch filesystem
-with enough quota.
+The current primary models are public, but authenticating with Hugging Face is
+still recommended for higher download rate limits. Keep the cache on a project
+or work filesystem with enough quota.
 
 ## Static smoke job
 

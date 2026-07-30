@@ -16,7 +16,7 @@ No requested requirement is intentionally omitted or blocked.
 | Requirement | Implementation | Test/status |
 |---|---|---|
 | XSum, SQuAD, WritingPrompts | `configs/paper.json`, `llm_detection/pipeline.py` | Config parsed; dataset loading awaiting Delta/network validation |
-| Llama 3.1 8B, Mistral Small 24B, Qwen 32B | `configs/paper.json`, `scripts/submit_delta_matrix.sh` | `tests/test_config_and_data.py`, `tests/test_delta_and_manifest.py`; weights awaiting Delta |
+| Primary 8B/24B/32B targets | Granite 3.3 8B Base, Mistral Small 24B Base, and Qwen 2.5 32B in `configs/paper.json` and `scripts/submit_delta_matrix.sh` | Tests cover the matrix; Llama 3.1 8B was provider-blocked by geographic access review and is explicitly replaced by public Apache-2.0 Granite 3.3 8B Base; weights awaiting Delta |
 | Erebus replication | Same files | Static validated; awaiting Delta |
 | Qwen 7B/14B/32B/72B scaling | Same files | Static validated; 72B explicitly gated to H200; awaiting Delta |
 | Seven detectors including LRR | `llm_detection/scoring.py`, `llm_detection/evaluation.py` | `tests/test_scoring.py`, `tests/test_evaluation.py` |

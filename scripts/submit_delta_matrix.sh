@@ -29,7 +29,7 @@ esac
 
 DATASETS=(xsum squad writingprompts)
 PRIMARY_MODELS=(
-  meta-llama/Llama-3.1-8B
+  ibm-granite/granite-3.3-8b-base
   mistralai/Mistral-Small-24B-Base-2501
   Qwen/Qwen2.5-32B
 )

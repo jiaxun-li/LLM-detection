@@ -33,6 +33,34 @@ GENERIC_FEATURE = {
     "log_rank": "log_rank",
     "entropy": "entropy",
 }
+EVALUATION_TOKEN_FEATURES = {
+    "logp",
+    "rank",
+    "log_rank",
+    "entropy",
+    "performer_nll",
+    "observer_to_performer_cross_entropy",
+}
+EVALUATION_UNUSED_BULK_FIELDS = {
+    "text",
+    "prompt",
+    "document_features",
+}
+
+
+def compact_evaluation_row(row: dict[str, Any]) -> dict[str, Any]:
+    """Keep saved score files rich while minimizing evaluator resident memory."""
+    compact = {
+        key: value
+        for key, value in row.items()
+        if key not in EVALUATION_UNUSED_BULK_FIELDS and key != "token_features"
+    }
+    compact["token_features"] = {
+        name: np.asarray(values, dtype=np.float64)
+        for name, values in row["token_features"].items()
+        if name in EVALUATION_TOKEN_FEATURES
+    }
+    return compact
 
 
 def detector_raw_score(row: dict[str, Any], detector: str) -> float:
@@ -358,9 +386,16 @@ def evaluate(
     binoculars_score_path: str | Path | None = None,
 ) -> list[dict[str, Any]]:
     """Run the full independent-split protocol and write tidy CSV output."""
-    target_rows = list(iter_jsonl(target_score_path))
+    target_rows = [
+        compact_evaluation_row(row) for row in iter_jsonl(target_score_path)
+    ]
     binoculars_rows = (
-        list(iter_jsonl(binoculars_score_path)) if binoculars_score_path else None
+        [
+            compact_evaluation_row(row)
+            for row in iter_jsonl(binoculars_score_path)
+        ]
+        if binoculars_score_path
+        else None
     )
     sources = _merge_score_sources(target_rows, binoculars_rows)
     eval_config = config["evaluation"]

@@ -15,7 +15,7 @@ class DeltaAndManifestTests(unittest.TestCase):
         self.assertIn("gpuA100x4)", submit)
         self.assertIn("gpuH200x8)", submit)
         for model in (
-            "meta-llama/Llama-3.1-8B",
+            "ibm-granite/granite-3.3-8b-base",
             "mistralai/Mistral-Small-24B-Base-2501",
             "KoboldAI/GPT-NeoX-20B-Erebus",
             "Qwen/Qwen2.5-72B",
