@@ -6,16 +6,16 @@ still needs a few submission-facing pieces before upload.
 ## Ready
 
 - End-to-end code exists for data preparation, scoring, evaluation, and plots.
-- Slurm scripts exist for Great Lakes GPU execution.
-- A smoke-test result is present in `real_data/xsum/Qwen__Qwen2.5-0.5B/` and
-  `real_results/xsum_qwen/`.
+- Slurm scripts exist for NCSA Delta GPU execution.
+- A bounded one-GPU Delta smoke workflow and a no-network synthetic validator
+  are present. No real GPU smoke result is bundled in this repository.
 - `requirements.txt` lists the main Python dependencies.
 
 ## Fix Before Sharing
 
-- Run at least one larger benchmark, ideally `N_SAMPLES=200` or more. The
-  current result split has only 3 human and 3 LLM test examples, so it proves
-  execution but not scientific stability.
+- Run the bounded Delta smoke gate, then at least one larger benchmark. Treat
+  the synthetic smoke as contract validation, not evidence of scientific
+  stability.
 - Decide whether to include generated JSONL score files. They are useful for
   reproducibility, but generated data can distract from the code package.
 - Remove or avoid sharing local-only files such as `.DS_Store`, `__pycache__/`,

@@ -5,9 +5,14 @@ comparing raw token aggregation with one-sided clipped aggregation under random
 and white-box tail human-text contamination. The primary protocol targets an
 ICLR/AISTATS-quality study across XSum, SQuAD, and WritingPrompts.
 
-The saved files under `real_data/`, `real_results/`, and `greatlake/` are
-preserved historical smoke outputs. They predate the independent three-split
-protocol and must not be reported as final results.
+## Canonical guides
+
+- [`SCIENTIFIC_WORKFLOW.md`](SCIENTIFIC_WORKFLOW.md) defines the frozen
+  21-cell protocol, leakage rules, metrics, result classes, and interpretation.
+- [`CODEBASE_GUIDE.md`](CODEBASE_GUIDE.md) maps that protocol to current
+  modules, files, I/O contracts, resume behavior, tests, and Delta operations.
+
+Read both before changing a configuration or launching a full-scale cell.
 
 ## Paper design
 

@@ -6,9 +6,11 @@ import csv
 import json
 import math
 import random
+import time
 from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any, Callable, Sequence
 
 import numpy as np
 
@@ -46,6 +48,34 @@ EVALUATION_UNUSED_BULK_FIELDS = {
     "prompt",
     "document_features",
 }
+
+
+@dataclass(frozen=True)
+class PrecomputedEvaluationScores:
+    """Compact per-analysis document scores addressed by stable row index."""
+
+    detector: str
+    analysis: str
+    raw: np.ndarray
+    clipped: np.ndarray
+    source_ids: tuple[str, ...]
+    source_row_indices: dict[str, np.ndarray]
+    elapsed_seconds: float
+
+    def values(self, aggregation: str, row_indices: Sequence[int]) -> np.ndarray:
+        if aggregation not in {"raw", "clipped"}:
+            raise ValueError(f"unknown aggregation {aggregation!r}")
+        scores = self.raw if aggregation == "raw" else self.clipped
+        return scores[np.asarray(row_indices, dtype=np.int64)]
+
+
+def _report_precompute_timing(event: dict[str, Any]) -> None:
+    """Emit machine-readable timing without changing scientific output rows."""
+    print(
+        "evaluation_precompute_timing="
+        + json.dumps(event, sort_keys=True, separators=(",", ":")),
+        flush=True,
+    )
 
 
 def compact_evaluation_row(row: dict[str, Any]) -> dict[str, Any]:
@@ -113,6 +143,61 @@ def oriented_score(
         # the calibrated orientation while retaining the documented formula.
         return float(math.exp(direction * transformed)) * direction
     return transformed
+
+
+def precompute_evaluation_scores(
+    rows: Sequence[dict[str, Any]],
+    detector: str,
+    direction: int,
+    clip_spec: dict[str, float],
+    analysis: str,
+    timing_callback: Callable[[dict[str, Any]], None] | None = None,
+) -> PrecomputedEvaluationScores:
+    """Calculate each raw and frozen-spec score exactly once for an analysis.
+
+    This function must be called only after orientation and clipping selection
+    have finished. Bootstrap code consumes the resulting float arrays by row
+    and clustered source index; it never reopens token-level feature arrays.
+    """
+    started = time.perf_counter()
+    raw = np.empty(len(rows), dtype=np.float64)
+    clipped = np.empty(len(rows), dtype=np.float64)
+    source_ids: list[str] = []
+    grouped: dict[str, list[int]] = defaultdict(list)
+    for row_index, row in enumerate(rows):
+        raw[row_index] = oriented_score(row, detector, direction)
+        clipped[row_index] = oriented_score(
+            row, detector, direction, clip_spec
+        )
+        source_id = str(row["sample_id"])
+        source_ids.append(source_id)
+        grouped[source_id].append(row_index)
+    elapsed = time.perf_counter() - started
+    source_row_indices = {
+        source_id: np.asarray(indices, dtype=np.int64)
+        for source_id, indices in grouped.items()
+    }
+    result = PrecomputedEvaluationScores(
+        detector=detector,
+        analysis=analysis,
+        raw=raw,
+        clipped=clipped,
+        source_ids=tuple(source_ids),
+        source_row_indices=source_row_indices,
+        elapsed_seconds=elapsed,
+    )
+    if timing_callback is not None:
+        timing_callback(
+            {
+                "analysis": analysis,
+                "detector": detector,
+                "elapsed_seconds": elapsed,
+                "row_count": len(rows),
+                "raw_score_count": len(rows),
+                "clipped_score_count": len(rows),
+            }
+        )
+    return result
 
 
 def auroc(human_scores: Sequence[float], llm_scores: Sequence[float]) -> float:
@@ -269,19 +354,68 @@ def _attacked(
     ]
 
 
-def _bootstrap_values(
+def _clean_indices(
+    rows: Sequence[dict[str, Any]], split: str, label: str
+) -> np.ndarray:
+    return np.asarray(
+        [
+            index
+            for index, row in enumerate(rows)
+            if row["split"] == split
+            and row["label"] == label
+            and row["contamination_mode"] == "none"
+        ],
+        dtype=np.int64,
+    )
+
+
+def _attacked_indices(
     rows: Sequence[dict[str, Any]],
+    split: str,
+    mode: str,
+    ratio: float,
+) -> np.ndarray:
+    if ratio == 0:
+        return _clean_indices(rows, split, "llm")
+    return np.asarray(
+        [
+            index
+            for index, row in enumerate(rows)
+            if row["split"] == split
+            and row["label"] == "llm"
+            and row["contamination_mode"] == mode
+            and abs(float(row["requested_contamination_ratio"]) - ratio) < 1e-12
+        ],
+        dtype=np.int64,
+    )
+
+
+def _selected_source_indices(
+    precomputed: PrecomputedEvaluationScores,
+    row_indices: Sequence[int],
+) -> dict[str, np.ndarray]:
+    selected = np.zeros(len(precomputed.raw), dtype=bool)
+    selected[np.asarray(row_indices, dtype=np.int64)] = True
+    return {
+        source_id: source_indices[selected[source_indices]]
+        for source_id, source_indices in precomputed.source_row_indices.items()
+        if np.any(selected[source_indices])
+    }
+
+
+def _bootstrap_index_values(
+    scores: np.ndarray,
+    grouped_indices: dict[str, np.ndarray],
     sampled_ids: Sequence[str],
-    score_fn: Callable[[dict[str, Any]], float],
-) -> list[float]:
-    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for row in rows:
-        grouped[str(row["sample_id"])].append(row)
-    return [
-        score_fn(row)
+) -> np.ndarray:
+    chunks = [
+        scores[grouped_indices[str(sample_id)]]
         for sample_id in sampled_ids
-        for row in grouped.get(str(sample_id), [])
+        if str(sample_id) in grouped_indices
     ]
+    if not chunks:
+        return np.asarray([], dtype=np.float64)
+    return np.concatenate(chunks)
 
 
 def percentile_interval(values: Sequence[float]) -> tuple[float, float]:
@@ -292,25 +426,34 @@ def percentile_interval(values: Sequence[float]) -> tuple[float, float]:
 
 
 def _metric_bootstrap(
-    human_rows: Sequence[dict[str, Any]],
-    llm_rows: Sequence[dict[str, Any]],
-    raw_score_fn: Callable[[dict[str, Any]], float],
-    clipped_score_fn: Callable[[dict[str, Any]], float],
+    precomputed: PrecomputedEvaluationScores,
+    human_indices: Sequence[int],
+    llm_indices: Sequence[int],
     raw_threshold: float,
     clipped_threshold: float,
     max_fpr: float,
     repetitions: int,
     seed: int,
 ) -> dict[str, tuple[float, float]]:
-    ids = sorted({str(row["sample_id"]) for row in human_rows + llm_rows})
+    human_grouped = _selected_source_indices(precomputed, human_indices)
+    llm_grouped = _selected_source_indices(precomputed, llm_indices)
+    ids = sorted(set(human_grouped) | set(llm_grouped))
     rng = random.Random(seed)
     samples: dict[str, list[float]] = defaultdict(list)
     for _ in range(repetitions):
         sampled = [rng.choice(ids) for _ in ids]
-        raw_h = _bootstrap_values(human_rows, sampled, raw_score_fn)
-        raw_m = _bootstrap_values(llm_rows, sampled, raw_score_fn)
-        clip_h = _bootstrap_values(human_rows, sampled, clipped_score_fn)
-        clip_m = _bootstrap_values(llm_rows, sampled, clipped_score_fn)
+        raw_h = _bootstrap_index_values(
+            precomputed.raw, human_grouped, sampled
+        )
+        raw_m = _bootstrap_index_values(
+            precomputed.raw, llm_grouped, sampled
+        )
+        clip_h = _bootstrap_index_values(
+            precomputed.clipped, human_grouped, sampled
+        )
+        clip_m = _bootstrap_index_values(
+            precomputed.clipped, llm_grouped, sampled
+        )
         raw_tpr = tpr(raw_m, raw_threshold)
         clip_tpr = tpr(clip_m, clipped_threshold)
         samples["raw_actual_fpr"].append(actual_fpr(raw_h, raw_threshold))
@@ -341,25 +484,38 @@ def robustness_auc(ratios: Sequence[float], tprs: Sequence[float]) -> float:
 
 
 def _robustness_bootstrap(
-    human_rows: Sequence[dict[str, Any]],
-    llm_rows_by_ratio: Sequence[Sequence[dict[str, Any]]],
+    precomputed: PrecomputedEvaluationScores,
+    human_indices: Sequence[int],
+    llm_indices_by_ratio: Sequence[Sequence[int]],
     ratios: Sequence[float],
-    score_fn: Callable[[dict[str, Any]], float],
+    aggregation: str,
     threshold: float,
     repetitions: int,
     seed: int,
 ) -> tuple[float, float]:
-    all_rows = list(human_rows) + [
-        row for ratio_rows in llm_rows_by_ratio for row in ratio_rows
+    scores = (
+        precomputed.raw if aggregation == "raw" else precomputed.clipped
+    )
+    human_grouped = _selected_source_indices(precomputed, human_indices)
+    llm_grouped_by_ratio = [
+        _selected_source_indices(precomputed, ratio_indices)
+        for ratio_indices in llm_indices_by_ratio
     ]
-    ids = sorted({str(row["sample_id"]) for row in all_rows})
+    ids = sorted(
+        set(human_grouped).union(
+            *[set(grouped) for grouped in llm_grouped_by_ratio]
+        )
+    )
     rng = random.Random(seed)
     values = []
     for _ in range(repetitions):
         sampled = [rng.choice(ids) for _ in ids]
         curve = [
-            tpr(_bootstrap_values(ratio_rows, sampled, score_fn), threshold)
-            for ratio_rows in llm_rows_by_ratio
+            tpr(
+                _bootstrap_index_values(scores, grouped, sampled),
+                threshold,
+            )
+            for grouped in llm_grouped_by_ratio
         ]
         values.append(robustness_auc(ratios, curve))
     return percentile_interval(values)
@@ -384,6 +540,7 @@ def evaluate(
     output_csv: str | Path,
     config: dict[str, Any],
     binoculars_score_path: str | Path | None = None,
+    timing_callback: Callable[[dict[str, Any]], None] | None = _report_precompute_timing,
 ) -> list[dict[str, Any]]:
     """Run the full independent-split protocol and write tidy CSV output."""
     target_rows = [
@@ -466,15 +623,26 @@ def evaluate(
 
         for analysis, oracle_mode, clip_spec in analyses:
             applicable_modes = [oracle_mode] if oracle_mode else modes
-            score_fns = {
-                "raw": lambda row, d=detector, o=direction: oriented_score(row, d, o),
-                "clipped": lambda row, d=detector, o=direction, s=clip_spec: oriented_score(
-                    row, d, o, s
-                ),
-            }
+            # Orientation and every candidate clipping decision above use only
+            # clipping-tuning rows. Only after the specification is frozen do
+            # calibration/test document scores enter this compact array cache.
+            precomputed = precompute_evaluation_scores(
+                rows,
+                detector,
+                direction,
+                clip_spec,
+                analysis,
+                timing_callback,
+            )
+            calibrate_human_indices = _clean_indices(
+                rows, "calibration", "human"
+            )
+            test_human_indices = _clean_indices(rows, "test", "human")
             thresholds: dict[tuple[str, float], float] = {}
-            for aggregation, score_fn in score_fns.items():
-                calibration_scores = [score_fn(row) for row in calibrate_human]
+            for aggregation in ("raw", "clipped"):
+                calibration_scores = precomputed.values(
+                    aggregation, calibrate_human_indices
+                )
                 for target_fpr in eval_config["target_fprs"]:
                     thresholds[(aggregation, float(target_fpr))] = calibration_threshold(
                         calibration_scores, float(target_fpr)
@@ -483,28 +651,28 @@ def evaluate(
             for mode in applicable_modes:
                 curve_values: dict[tuple[str, float], list[float]] = defaultdict(list)
                 row_indices: dict[tuple[str, float], list[int]] = defaultdict(list)
-                llm_rows_by_ratio: list[list[dict[str, Any]]] = []
+                llm_indices_by_ratio: list[np.ndarray] = []
                 for ratio in ratios:
                     llm_rows = _attacked(rows, "test", mode, ratio)
-                    llm_rows_by_ratio.append(llm_rows)
+                    llm_indices = _attacked_indices(rows, "test", mode, ratio)
+                    llm_indices_by_ratio.append(llm_indices)
                     if not llm_rows:
                         raise ValueError(
                             f"no final test rows for {detector}/{mode}/{ratio}"
                         )
-                    raw_fn = score_fns["raw"]
-                    clipped_fn = score_fns["clipped"]
-                    raw_h = [raw_fn(row) for row in test_human]
-                    raw_m = [raw_fn(row) for row in llm_rows]
-                    clipped_h = [clipped_fn(row) for row in test_human]
-                    clipped_m = [clipped_fn(row) for row in llm_rows]
+                    raw_h = precomputed.values("raw", test_human_indices)
+                    raw_m = precomputed.values("raw", llm_indices)
+                    clipped_h = precomputed.values(
+                        "clipped", test_human_indices
+                    )
+                    clipped_m = precomputed.values("clipped", llm_indices)
                     for target_fpr in [float(x) for x in eval_config["target_fprs"]]:
                         raw_threshold = thresholds[("raw", target_fpr)]
                         clipped_threshold = thresholds[("clipped", target_fpr)]
                         bootstrap = _metric_bootstrap(
-                            test_human,
-                            llm_rows,
-                            raw_fn,
-                            clipped_fn,
+                            precomputed,
+                            test_human_indices,
+                            llm_indices,
                             raw_threshold,
                             clipped_threshold,
                             float(eval_config["partial_auroc_max_fpr"]),
@@ -712,10 +880,11 @@ def evaluate(
                     curve_auc = robustness_auc(ratios, values)
                     aggregation, target_fpr = key
                     curve_ci = _robustness_bootstrap(
-                        test_human,
-                        llm_rows_by_ratio,
+                        precomputed,
+                        test_human_indices,
+                        llm_indices_by_ratio,
                         ratios,
-                        score_fns[aggregation],
+                        aggregation,
                         thresholds[(aggregation, target_fpr)],
                         int(eval_config["bootstrap_repetitions"]),
                         int(eval_config["bootstrap_seed"])
