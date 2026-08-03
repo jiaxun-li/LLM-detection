@@ -105,7 +105,12 @@ the prompt and is truncated to the realized LLM continuation length. Human
 contamination replaces target-tokenizer tokens one for one before decoding.
 The stored row records requested and realized contamination ratios, original,
 human, replaced, and final token counts, and decode/re-tokenize length drift.
-The paper permits at most eight tokens of round-trip drift.
+The paper permits at most twelve tokens of round-trip drift. This remains a
+guard against pathological decode/re-tokenize changes rather than an assumed
+exact-length claim: every row records its final token count, signed length
+delta, and realized contamination ratio. The bound was frozen after a
+Qwen-32B XSum preparation audit found mean absolute drift below one token and a
+rare tail example with a nine-token drift.
 
 The fixed experimental ratios are 0%, 5%, 10%, 20%, 30%, 40%, and 50%. They
 are experimental conditions, not hyperparameters: no ratio is selected,

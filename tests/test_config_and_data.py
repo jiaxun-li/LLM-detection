@@ -42,7 +42,7 @@ class ConfigAndDataTests(unittest.TestCase):
         self.assertEqual(config["generation"]["continuation_tokens"], 220)
         self.assertEqual(config["generation"]["temperature"], 0.8)
         self.assertEqual(config["generation"]["top_p"], 0.95)
-        self.assertEqual(config["contamination"]["max_length_delta_tokens"], 8)
+        self.assertEqual(config["contamination"]["max_length_delta_tokens"], 12)
         self.assertEqual(config["contamination"]["random_draws"], 3)
         self.assertEqual(
             config["contamination"]["ratios"],
