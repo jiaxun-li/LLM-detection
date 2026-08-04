@@ -18,7 +18,8 @@ from llm_detection.data import (
     tail_token_contamination,
     validate_disjoint_splits,
 )
-from llm_detection.pipeline import select_source_manifest
+from llm_detection.io import iter_jsonl
+from llm_detection.pipeline import generate_base_examples, select_source_manifest
 
 
 class ConfigAndDataTests(unittest.TestCase):
@@ -156,6 +157,98 @@ class ConfigAndDataTests(unittest.TestCase):
             all(row["dataset_resolved_revision"] == "resolved-dataset-commit" for row in rows)
         )
         self.assertTrue(all(len(row["source_text"].split()) >= 260 for row in rows))
+
+    def test_generation_records_prompt_drift_and_repairs_pathological_continuation(self) -> None:
+        class RoundTripTokenizer:
+            def encode(self, text, add_special_tokens=False):
+                del add_special_tokens
+                if text == "source":
+                    return list(range(250))
+                if text == "prompt":
+                    return list(range(29))
+                if text == "llm":
+                    return list(range(1000, 1195))
+                if text.startswith("human-"):
+                    count = int(text.split("-", 1)[1])
+                    return list(range(30, 30 + count))
+                raise AssertionError(f"unexpected text: {text!r}")
+
+            def decode(
+                self,
+                token_ids,
+                skip_special_tokens=True,
+                clean_up_tokenization_spaces=False,
+            ):
+                del skip_special_tokens, clean_up_tokenization_spaces
+                values = list(token_ids)
+                if values == list(range(30)):
+                    return "prompt"
+                if values and values[0] == 30:
+                    return f"human-{len(values)}"
+                if values and values[0] >= 1000:
+                    return "llm"
+                raise AssertionError(f"unexpected token IDs: {values[:3]!r}")
+
+        class Backend:
+            tokenizer = RoundTripTokenizer()
+            resolved_model_revision = "model-revision"
+            resolved_tokenizer_revision = "tokenizer-revision"
+
+            def generate(self, requests):
+                return {
+                    request.key: list(range(2000, 2220)) for request in requests
+                }
+
+        config = copy.deepcopy(load_config("configs/smoke.json"))
+        config["splits"].update(
+            {"clipping_tuning": 1, "calibration": 0, "test": 0}
+        )
+        config["generation"].update(
+            {
+                "prompt_tokens": 30,
+                "continuation_tokens": 220,
+                "max_new_tokens": 220,
+                "min_new_tokens": 210,
+                "checkpoint_examples": 1,
+            }
+        )
+        config["contamination"]["max_length_delta_tokens"] = 12
+        config = resolved_run_config(
+            config, "xsum", "Qwen/Qwen2.5-0.5B", "roundtrip-test"
+        )
+        source = {
+            "dataset": "xsum",
+            "dataset_id": "example",
+            "source_id": "source-id",
+            "sample_id": "sample-id",
+            "source_text": "source",
+            "split": "clipping_tuning",
+            "generation_seed": 101,
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            source_path = Path(temporary) / "source.jsonl"
+            base_path = Path(temporary) / "base.jsonl"
+            source_path.write_text(json.dumps(source) + "\n", encoding="utf-8")
+            generate_base_examples(config, source_path, base_path, Backend())
+            row = next(iter_jsonl(base_path))
+
+        self.assertEqual(row["requested_prompt_token_count"], 30)
+        self.assertEqual(row["prompt_input_token_count"], 29)
+        self.assertEqual(len(row["prompt_input_token_ids"]), 29)
+        self.assertEqual(row["prompt_roundtrip_length_delta_tokens"], -1)
+        self.assertEqual(row["initial_llm_roundtrip_length_delta_tokens"], -25)
+        self.assertTrue(row["continuation_roundtrip_normalized"])
+        self.assertEqual(row["continuation_token_count"], 195)
+        self.assertEqual(len(row["human_token_ids"]), 195)
+        self.assertEqual(len(row["llm_token_ids"]), 195)
+        self.assertEqual(
+            Backend.tokenizer.encode(row["human_continuation"]),
+            row["human_token_ids"],
+        )
+        self.assertEqual(
+            Backend.tokenizer.encode(row["llm_continuation"]),
+            row["llm_token_ids"],
+        )
 
 
 if __name__ == "__main__":

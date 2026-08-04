@@ -204,6 +204,54 @@ def _tail_key(row: dict[str, Any]) -> tuple[str]:
     return (str(row["sample_id"]),)
 
 
+def _decode_visible(tokenizer: Any, token_ids: Sequence[int]) -> str:
+    return tokenizer.decode(
+        list(token_ids),
+        skip_special_tokens=True,
+        clean_up_tokenization_spaces=False,
+    )
+
+
+def _stable_visible_tokenization(
+    tokenizer: Any, token_ids: Sequence[int], max_iterations: int = 12
+) -> tuple[str, list[int]]:
+    """Return visible text and token IDs that reproduce one another exactly."""
+    current = list(token_ids)
+    for _ in range(max_iterations):
+        text = _decode_visible(tokenizer, current)
+        encoded = list(tokenizer.encode(text, add_special_tokens=False))
+        if encoded == current:
+            return text, current
+        current = encoded
+    raise ValueError("visible decode/re-tokenize sequence did not stabilize")
+
+
+def _canonical_length_matched_pair(
+    tokenizer: Any,
+    human_ids: Sequence[int],
+    llm_ids: Sequence[int],
+    maximum_length: int,
+) -> tuple[str, list[int], str, list[int]]:
+    """Canonicalize a pathological pair and retain a common visible length."""
+    _, canonical_human = _stable_visible_tokenization(tokenizer, human_ids)
+    _, canonical_llm = _stable_visible_tokenization(tokenizer, llm_ids)
+    for _ in range(12):
+        length = min(len(canonical_human), len(canonical_llm), maximum_length)
+        if length <= 0:
+            raise ValueError("canonical continuation is empty")
+        human_text, next_human = _stable_visible_tokenization(
+            tokenizer, canonical_human[:length]
+        )
+        llm_text, next_llm = _stable_visible_tokenization(
+            tokenizer, canonical_llm[:length]
+        )
+        if len(next_human) == len(next_llm) == length:
+            return human_text, next_human, llm_text, next_llm
+        canonical_human = next_human
+        canonical_llm = next_llm
+    raise ValueError("canonical human/LLM continuation lengths did not converge")
+
+
 def generate_base_examples(
     run_config: dict[str, Any],
     source_path: str | Path,
@@ -218,7 +266,10 @@ def generate_base_examples(
     tokenizer = backend.tokenizer
     generation = run_config["generation"]
     requests: list[GenerationRequest] = []
-    prepared: dict[str, tuple[dict[str, Any], list[int], list[int], str]] = {}
+    prepared: dict[
+        str,
+        tuple[dict[str, Any], list[int], list[int], str, list[int], int],
+    ] = {}
     for source in sources:
         token_ids = tokenizer.encode(source["source_text"], add_special_tokens=False)
         required = int(generation["prompt_tokens"]) + int(
@@ -238,15 +289,27 @@ def generate_base_examples(
             clean_up_tokenization_spaces=False,
         )
         encoded_prompt = tokenizer.encode(prompt, add_special_tokens=False)
-        if len(encoded_prompt) != int(generation["prompt_tokens"]):
+        prompt_delta = len(encoded_prompt) - int(generation["prompt_tokens"])
+        tolerance = int(
+            run_config["contamination"].get("max_length_delta_tokens", 4)
+        )
+        if abs(prompt_delta) > tolerance:
             raise ValueError(
                 f"prompt round-trip for {source['sample_id']} produced "
                 f"{len(encoded_prompt)} tokens instead of "
-                f"{generation['prompt_tokens']}"
+                f"{generation['prompt_tokens']}; drift exceeds configured "
+                f"tolerance {tolerance}"
             )
         key = str(source["sample_id"])
         requests.append(GenerationRequest(key, prompt, int(source["generation_seed"])))
-        prepared[key] = (source, prompt_ids, human_ids, prompt)
+        prepared[key] = (
+            source,
+            prompt_ids,
+            human_ids,
+            prompt,
+            list(encoded_prompt),
+            prompt_delta,
+        )
 
     with AppendSafeJsonlWriter(base_path) as writer:
         checkpoint_examples = max(int(generation.get("checkpoint_examples", 96)), 1)
@@ -256,8 +319,16 @@ def generate_base_examples(
             ]
             generated = backend.generate(checkpoint_requests)
             for request in checkpoint_requests:
-                source, prompt_ids, human_ids, prompt = prepared[request.key]
+                (
+                    source,
+                    prompt_ids,
+                    human_ids,
+                    prompt,
+                    prompt_input_ids,
+                    prompt_delta,
+                ) = prepared[request.key]
                 llm_ids = list(generated[request.key])
+                generated_llm_count = len(llm_ids)
                 minimum = int(
                     generation.get(
                         "min_new_tokens", generation["continuation_tokens"]
@@ -275,25 +346,39 @@ def generate_base_examples(
                 )
                 llm_ids = llm_ids[:length]
                 human_ids = human_ids[:length]
-                human_text = tokenizer.decode(
-                    human_ids,
-                    skip_special_tokens=True,
-                    clean_up_tokenization_spaces=False,
-                )
-                llm_text = tokenizer.decode(
-                    llm_ids,
-                    skip_special_tokens=True,
-                    clean_up_tokenization_spaces=False,
-                )
+                human_text = _decode_visible(tokenizer, human_ids)
+                llm_text = _decode_visible(tokenizer, llm_ids)
                 tolerance = int(
                     run_config["contamination"].get("max_length_delta_tokens", 4)
                 )
-                for label, text in (("human", human_text), ("llm", llm_text)):
-                    roundtrip = len(tokenizer.encode(text, add_special_tokens=False))
-                    if abs(roundtrip - length) > tolerance:
+                human_roundtrip_count = len(
+                    tokenizer.encode(human_text, add_special_tokens=False)
+                )
+                llm_roundtrip_count = len(
+                    tokenizer.encode(llm_text, add_special_tokens=False)
+                )
+                human_delta = human_roundtrip_count - length
+                llm_delta = llm_roundtrip_count - length
+                normalized = abs(human_delta) > tolerance or abs(llm_delta) > tolerance
+                if normalized:
+                    human_text, human_ids, llm_text, llm_ids = (
+                        _canonical_length_matched_pair(
+                            tokenizer,
+                            human_ids,
+                            llm_ids,
+                            int(generation["continuation_tokens"]),
+                        )
+                    )
+                    length = len(llm_ids)
+                    if len(human_ids) != length:
+                        raise ValueError("canonical continuation lengths disagree")
+                    if tokenizer.encode(
+                        human_text, add_special_tokens=False
+                    ) != human_ids or tokenizer.encode(
+                        llm_text, add_special_tokens=False
+                    ) != llm_ids:
                         raise ValueError(
-                            f"{label} continuation round-trip drift for {request.key}: "
-                            f"{roundtrip - length} tokens"
+                            "canonical continuation text/token IDs disagree"
                         )
                 row = {
                     **source,
@@ -306,11 +391,21 @@ def generate_base_examples(
                     "target_tokenizer_resolved_revision": backend.resolved_tokenizer_revision,
                     "prompt": prompt,
                     "prompt_token_ids": prompt_ids,
+                    "prompt_input_token_ids": prompt_input_ids,
+                    "requested_prompt_token_count": int(generation["prompt_tokens"]),
+                    "prompt_input_token_count": len(prompt_input_ids),
+                    "prompt_roundtrip_length_delta_tokens": prompt_delta,
                     "human_continuation": human_text,
                     "human_token_ids": human_ids,
                     "llm_continuation": llm_text,
                     "llm_token_ids": llm_ids,
                     "continuation_token_count": length,
+                    "generated_llm_token_count": generated_llm_count,
+                    "initial_human_roundtrip_token_count": human_roundtrip_count,
+                    "initial_llm_roundtrip_token_count": llm_roundtrip_count,
+                    "initial_human_roundtrip_length_delta_tokens": human_delta,
+                    "initial_llm_roundtrip_length_delta_tokens": llm_delta,
+                    "continuation_roundtrip_normalized": normalized,
                     "generation_backend": generation["backend"],
                     "generation_temperature": generation["temperature"],
                     "generation_top_p": generation["top_p"],

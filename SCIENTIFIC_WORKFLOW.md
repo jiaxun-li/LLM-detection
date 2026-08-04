@@ -100,15 +100,24 @@ approximately 220-token continuation. The frozen generation settings are:
 - top-p 0.95;
 - Transformers by default, with vLLM as an optional generation backend.
 
+The prompt text is decoded from the first 30 source token IDs. Because some
+tokenizers do not make arbitrary token slices textually idempotent, the model's
+actual re-encoded prompt can differ slightly in length. The requested count,
+actual input IDs/count, and signed prompt drift are stored. Drift within the
+same twelve-token integrity guard is accepted; larger drift remains an error.
+
 The human continuation is taken from the same target-independent source after
 the prompt and is truncated to the realized LLM continuation length. Human
 contamination replaces target-tokenizer tokens one for one before decoding.
 The stored row records requested and realized contamination ratios, original,
 human, replaced, and final token counts, and decode/re-tokenize length drift.
-The paper permits at most twelve tokens of round-trip drift. This remains a
-guard against pathological decode/re-tokenize changes rather than an assumed
-exact-length claim: every row records its final token count, signed length
-delta, and realized contamination ratio. The bound was frozen after a
+The paper uses a twelve-token round-trip integrity guard rather than assuming
+exact textual idempotence. If an uncontaminated human/LLM continuation exceeds
+that guard, its visible text is canonically re-tokenized and the pair is
+length-matched before any contamination is constructed; the initial counts,
+signed drift, and normalization flag remain recorded. Constructed rows must
+still finish within the twelve-token guard and record final count, signed
+length delta, and realized contamination ratio. The bound was frozen after a
 Qwen-32B XSum preparation audit found mean absolute drift below one token and a
 rare tail example with a nine-token drift.
 

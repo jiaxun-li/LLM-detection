@@ -141,7 +141,11 @@ restartable products:
    human continuation, and generates the LLM continuation. The realized human
    and LLM sides are length matched. `TransformersBackend` groups requests by
    assigned seed and length bucket; `VLLMBackend` is an optional generation-only
-   accelerator.
+   accelerator. It records the decoded prompt's actual re-encoded input IDs and
+   signed length drift. Small drift is accepted within the configured integrity
+   guard. A continuation exceeding that guard is converted to a stable visible
+   text/token representation and re-matched to its human pair; initial counts,
+   drift, and the normalization flag are retained in `base_generations.jsonl`.
 2. `build_tail_cache` sentence-splits the human continuation, batches
    prompt-plus-span candidates, scores each candidate exactly once by
    target-model NLL, and writes the frozen descending order to
@@ -351,6 +355,19 @@ python plot_tpr_contamination.py \
 
 Use `--detectors log_likelihood,lrr,binoculars` to select detectors or
 `--analysis` for a deliberately labeled non-primary analysis.
+
+[`scripts/export_completed_plots.py`](scripts/export_completed_plots.py)
+discovers the newest completed, non-debug run for every available paper cell,
+creates an overview and one compact plot per detector, copies small metrics and
+manifest artifacts, lists missing/skipped cells, and produces a ZIP without
+reading the large JSONL score packs:
+
+```bash
+python scripts/export_completed_plots.py
+```
+
+By default the export and archive are written below
+`results/plot_exports/`, which resolves to `/work/hdd` in the Delta checkout.
 
 ## Delta setup, storage, and Slurm
 

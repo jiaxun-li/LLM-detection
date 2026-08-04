@@ -63,14 +63,17 @@ models.
 - Full paper settings are in `configs/paper.json`: 3,000 unique sources,
   78,000 prepared/scored rows per cell, random and tail contamination at
   0/5/10/20/30/40/50 percent, three random draws, and 2,000 clustered-bootstrap
-  repetitions. The paper-wide decode/re-tokenize drift guard is 12 tokens; the
-  realized final count, signed drift, and contamination ratio remain recorded
-  per row.
+  repetitions. The paper-wide decode/re-tokenize integrity guard is 12 tokens.
+  Small prompt drift is recorded; a base continuation exceeding the guard is
+  canonically re-tokenized and length-matched before contamination. Initial and
+  final counts, signed drift, normalization status, and realized contamination
+  ratio remain recorded.
 - The three Granite 8B dataset cells have already produced full prepared data,
   target scores, and Binoculars scores. Their evaluation can be rerun without
   repeating GPU inference.
-- The next planned full cell is Qwen 2.5 32B on XSum. Do not claim it is running
-  or complete without checking Slurm and its manifest.
+- Qwen 2.5 32B on XSum has produced a completed full cell. Other cells remain
+  dynamic; do not claim that they are running or complete without checking
+  Slurm and their manifests.
 
 ## Evaluator status
 
