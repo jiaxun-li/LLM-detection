@@ -291,6 +291,44 @@ Use the following result labels consistently:
 
 ## External benchmarks and interpretation risks
 
+### Preregistered Granite-XSum splice-artifact audit
+
+Before interpreting synthetic contamination as realistic human editing, run the
+separate paired audit configured by
+[`configs/splice_artifact_audit_granite_xsum.json`](configs/splice_artifact_audit_granite_xsum.json).
+It reuses a completed Granite 3.3 8B Base x XSum cell but never changes that
+cell or the 21-cell primary protocol. Five hundred deterministically selected
+test sources receive one same-prompt alternative Granite continuation generated
+with seed 404. At 10%, 30%, and 50%, the audit crosses donor authorship (human
+versus alternative Granite) with placement (the paper's arbitrary token windows
+versus complete sentence-aligned replacement). Token-window pairs use identical
+replacement windows, token budgets, and seeds; sentence pairs use identical
+recipient sentence positions. The clean continuation is common to every curve.
+
+Detector direction, clipping specifications, and 1%/5% FPR calibration
+thresholds are imported unchanged from the completed source cell. No audit row
+may tune or recalibrate them. The primary diagnostic is boundary-artifact share:
+
+```text
+(clean TPR robustness AUC - LLM-donor robustness AUC)
+-----------------------------------------------------
+(clean TPR robustness AUC - human-donor robustness AUC)
+```
+
+The 0.30 and 0.70 bands are preregistered interpretation heuristics, not formal
+hypothesis-test cutoffs. A denominator at or below 0.02 is marked
+non-interpretable. The redesign decision emphasizes log likelihood, rank, log
+rank, and LRR, while entropy, entropy gap, and Binoculars remain supporting
+analyses. Source-cluster bootstraps use the same resampled source indices for
+each paired human/LLM comparison. Boundary-local token diagnostics are reported
+separately from document-level results.
+
+If most core comparisons exceed 0.70 or sentence alignment removes the main
+clipping benefit, the 21-cell results remain valid only as a synthetic
+token-splice stress test; a realistic sentence-aligned primary study must then
+be designed. Source manifests, base human/LLM continuations, and clean results
+remain reusable, but newly constructed contaminated texts require new scoring.
+
 An external benchmark must import the originating cell's frozen direction,
 clipping specification, raw and clipped calibration thresholds, detector
 formula, tokenizer/model revisions, prompt/generation policy where applicable,

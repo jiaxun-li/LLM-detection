@@ -197,6 +197,54 @@ def _random_nonoverlapping_windows(
     return [placements[index] for index in range(len(chunk_lengths))]
 
 
+def random_token_replacement_plan(
+    original_count: int,
+    donor_spans: Sequence[Sequence[int]],
+    ratio: float,
+    corruption_seed: int,
+) -> tuple[list[list[int]], list[tuple[int, int]]]:
+    """Freeze donor chunks and recipient windows for a paired splice control.
+
+    The returned plan is exactly the plan used by ``random_token_contamination``.
+    Keeping plan construction separate lets an audit hold token budget, chunk
+    lengths, placement, and corruption seed fixed while changing only the donor
+    authorship.
+    """
+    budget = _token_budget(int(original_count), float(ratio))
+    if budget == 0:
+        return [], []
+    rng = random.Random(int(corruption_seed))
+    chunks = _take_human_chunks(donor_spans, budget, rng)
+    windows = _random_nonoverlapping_windows(
+        int(original_count), [len(chunk) for chunk in chunks], rng
+    )
+    return chunks, windows
+
+
+def apply_token_replacement_plan(
+    original_ids: Sequence[int],
+    donor_chunks: Sequence[Sequence[int]],
+    windows: Sequence[tuple[int, int]],
+) -> list[int]:
+    """Apply a validated, length-preserving token replacement plan."""
+    if len(donor_chunks) != len(windows):
+        raise ValueError("donor chunks and replacement windows disagree")
+    mixed = list(original_ids)
+    occupied: set[int] = set()
+    for chunk, (start, end) in zip(donor_chunks, windows):
+        values = list(chunk)
+        if start < 0 or end < start or end > len(mixed):
+            raise ValueError("replacement window is outside the continuation")
+        if end - start != len(values):
+            raise ValueError("replacement chunk length does not match its window")
+        positions = set(range(start, end))
+        if occupied.intersection(positions):
+            raise ValueError("replacement windows overlap")
+        occupied.update(positions)
+        mixed[start:end] = values
+    return mixed
+
+
 def _replace_at_positions(
     original_ids: Sequence[int],
     human_ids: Sequence[int],
@@ -219,14 +267,10 @@ def random_token_contamination(
     budget = _token_budget(original_count, ratio)
     if budget == 0:
         return list(original_ids), contamination_counts(ratio, original_count, 0, 0)
-    rng = random.Random(corruption_seed)
-    chunks = _take_human_chunks(human_spans, budget, rng)
-    windows = _random_nonoverlapping_windows(
-        original_count, [len(chunk) for chunk in chunks], rng
+    chunks, windows = random_token_replacement_plan(
+        original_count, human_spans, ratio, corruption_seed
     )
-    mixed = list(original_ids)
-    for chunk, (start, end) in zip(chunks, windows):
-        mixed[start:end] = chunk
+    mixed = apply_token_replacement_plan(original_ids, chunks, windows)
     return mixed, contamination_counts(ratio, original_count, budget, budget)
 
 

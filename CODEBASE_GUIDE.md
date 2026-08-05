@@ -13,7 +13,8 @@ synthetic tests require no downloads.
 |-- configs/
 |   |-- paper.json
 |   |-- smoke.json
-|   `-- delta_smoke_qwen_0_5b.json
+|   |-- delta_smoke_qwen_0_5b.json
+|   `-- splice_artifact_audit_granite_xsum.json
 |-- llm_detection/
 |   |-- config.py          # JSON loading, overrides, validation
 |   |-- data.py            # splits, seeds, contamination, row keys
@@ -23,17 +24,21 @@ synthetic tests require no downloads.
 |   |-- evaluation.py      # clipping, scalar cache, metrics, bootstrap
 |   |-- io.py              # append-safe JSONL and completion markers
 |   |-- runtime.py         # manifests and progress/accelerator provenance
+|   |-- splice_audit.py    # paired splice controls and frozen evaluation
+|   |-- splice_audit_plot.py
 |   `-- smoke_validation.py
 |-- scripts/
 |   |-- setup_delta_env.sh
 |   |-- delta_experiment.sbatch
 |   |-- submit_delta_matrix.sh
 |   |-- delta_smoke_qwen_0_5b.sbatch
+|   |-- delta_splice_artifact_audit.sbatch
 |   |-- submit_delta_smoke.sh
 |   |-- synthetic_delta_smoke.py
 |   `-- validate_delta_smoke.py
 |-- tests/
 |-- run_experiment.py
+|-- run_splice_artifact_audit.py
 |-- prepare_real_contamination.py
 |-- score_real_text.py
 |-- evaluate_real_clipping.py
@@ -57,6 +62,24 @@ and now refers to the current Delta workflow. None of these files is imported
 by the current pipeline or a canonical result/entry point. The old source and
 binary artifacts remain an explicit cleanup residual, not evidence that the
 Great Lakes workflow is supported.
+
+The paired splice-artifact audit is intentionally isolated from the primary
+entry point:
+
+- `run_splice_artifact_audit.py` orchestrates prepare, score, and frozen-choice
+  evaluation for the audit;
+- `llm_detection/splice_audit.py` contains deterministic pairing,
+  sentence-aligned construction, frozen evaluation, clustered bootstrap, and
+  boundary diagnostics;
+- `llm_detection/splice_audit_plot.py` creates raw/clipped 2-by-7 curves and the
+  artifact-share figure;
+- `scripts/delta_splice_artifact_audit.sbatch` is the bounded two-A100 launch;
+- `configs/splice_artifact_audit_granite_xsum.json` freezes the diagnostic
+  sample, ratios, seeds, and interpretation bands.
+
+Audit artifacts live under `runs/splice_artifact_audits/<audit-id>` and
+`results/splice_artifact_audits/<audit-id>` through the existing work-filesystem
+links. They are never written into the completed Granite source cell.
 
 ## Configuration and command dispatch
 
@@ -312,6 +335,102 @@ keys and requires output count to match input count before
 `score.complete.json`. Evaluation writes `evaluate.complete.json` only after
 the CSV is created.
 
+## Paired Granite-XSum splice-artifact audit
+
+[`run_splice_artifact_audit.py`](run_splice_artifact_audit.py) is a bounded,
+isolated follow-up to the primary 21-cell study. It reuses the completed
+Granite-XSum cell named in
+[`configs/splice_artifact_audit_granite_xsum.json`](configs/splice_artifact_audit_granite_xsum.json)
+and does not modify that cell. The default protocol deterministically selects
+500 test sources, generates one seed-404 alternative Granite continuation for
+each source, and constructs one common clean row plus four paired conditions at
+10/30/50 percent contamination. Thus the default audit writes 500 alternative
+generations and `500 x (1 + 4 x 3) = 6,500` data, target-score, and Binoculars
+rows.
+
+The token-level human condition uses the exact primary-study draw-zero random
+replacement plan. Its LLM-donor pair reuses the same recipient windows and
+replacement-token budget. The sentence-level human/LLM pair reuses recipient
+sentence positions and inserts only complete donor sentences. Evaluation
+imports the source cell's frozen detector directions, clipping specifications,
+and 1/5-percent-FPR thresholds; it never tunes them on audit rows. Outputs live
+under `runs/splice_artifact_audits/<audit-id>` and
+`results/splice_artifact_audits/<audit-id>`.
+
+Run the all-detector gate first. These commands are for Delta after the user's
+Git pull and after verifying that both `runs` and `results` resolve below
+`/work/hdd`:
+
+```bash
+cd ~/LLM-detection
+source /projects/bhuc/$USER/venvs/delta-smoke/bin/activate
+
+STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+AUDIT_ID="granite-splice-smoke-$STAMP"
+JOB_ID=$(sbatch --parsable \
+  --account=bhuc-delta-gpu \
+  --partition=gpuA100x4 \
+  --gpus-per-node=2 \
+  --cpus-per-task=16 \
+  --mem=160G \
+  --time=02:00:00 \
+  --job-name=granite-splice-smoke \
+  --export=ALL,AUDIT_ID="$AUDIT_ID",SOURCE_RUN_ID=granite8b-xsum-full-20260730T063720Z,SAMPLE_COUNT=12,BOOTSTRAP_REPETITIONS=100,DEBUG_ONLY=1 \
+  scripts/delta_splice_artifact_audit.sbatch)
+echo "submitted_job_id=$JOB_ID audit_id=$AUDIT_ID"
+```
+
+This gate deliberately includes Binoculars. It should produce 12 alternative
+rows and `12 x 13 = 156` data/target/Binoculars rows. After it passes, launch
+the frozen 500-source audit with a new ID:
+
+```bash
+STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+AUDIT_ID="granite-splice-audit-$STAMP"
+JOB_ID=$(sbatch --parsable \
+  --account=bhuc-delta-gpu \
+  --partition=gpuA100x4 \
+  --gpus-per-node=2 \
+  --cpus-per-task=16 \
+  --mem=160G \
+  --time=06:00:00 \
+  --job-name=granite-splice-audit \
+  --export=ALL,AUDIT_ID="$AUDIT_ID",SOURCE_RUN_ID=granite8b-xsum-full-20260730T063720Z \
+  scripts/delta_splice_artifact_audit.sbatch)
+echo "submitted_job_id=$JOB_ID audit_id=$AUDIT_ID"
+```
+
+Validate Slurm and scientific completion independently:
+
+```bash
+sacct -j "$JOB_ID" --format=JobID,JobName,State,Elapsed,AllocTRES,ExitCode
+tail -n 100 "logs/granite-splice-audit-$JOB_ID.err"
+wc -l \
+  "runs/splice_artifact_audits/$AUDIT_ID/alternative_generations.jsonl" \
+  "runs/splice_artifact_audits/$AUDIT_ID/data.jsonl" \
+  "runs/splice_artifact_audits/$AUDIT_ID/target_scores.jsonl" \
+  "runs/splice_artifact_audits/$AUDIT_ID/binoculars_scores.jsonl"
+python - "$AUDIT_ID" <<'PY'
+import json, sys
+from pathlib import Path
+audit_id = sys.argv[1]
+run = Path("runs/splice_artifact_audits") / audit_id
+result = Path("results/splice_artifact_audits") / audit_id
+manifest = json.loads((run / "manifest.json").read_text())
+summary = json.loads((result / "summary.json").read_text())
+print("status:", manifest["completion_status"])
+print("stages:", manifest["completed_stages"])
+print("summary:", summary)
+PY
+```
+
+The expected full counts are 500/6,500/6,500/6,500. The result directory also
+contains `metrics.csv`, `artifact_share.csv`, `boundary_diagnostics.csv`, and
+three compact PNGs. Alternative generation uses the same checkpoint semantics
+as the main Transformers backend: completed rows survive interruption, but a
+mid-generation resume does not promise RNG equivalence to an uninterrupted
+run. Use a new audit ID if the frozen protocol changes.
+
 ## Manifests, completion markers, and resume behavior
 
 For non-selection stages, `run_experiment.py` creates
@@ -360,7 +479,8 @@ Use `--detectors log_likelihood,lrr,binoculars` to select detectors or
 discovers the newest completed, non-debug run for every available paper cell,
 creates an overview and one compact plot per detector, copies small metrics and
 manifest artifacts, lists missing/skipped cells, and produces a ZIP without
-reading the large JSONL score packs:
+reading the large JSONL score packs. Each cell also receives a 2-by-7 overview
+and separate seven-detector horizontal strips for 1% and 5% FPR:
 
 ```bash
 python scripts/export_completed_plots.py

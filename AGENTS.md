@@ -75,12 +75,24 @@ models.
   dynamic; do not claim that they are running or complete without checking
   Slurm and their manifests.
 
+The Granite-XSum paired splice-artifact audit is a separate diagnostic, not a
+22nd paper cell. Its frozen protocol is in
+`configs/splice_artifact_audit_granite_xsum.json`, its entry point is
+`run_splice_artifact_audit.py`, and its Delta wrapper is
+`scripts/delta_splice_artifact_audit.sbatch`. It compares human versus
+same-model donor text under paired token windows and paired sentence positions,
+while reusing the completed Granite-XSum cell's frozen thresholds, directions,
+and clipping specifications. Audit outputs belong below
+`runs/splice_artifact_audits/` and `results/splice_artifact_audits/`. The local
+implementation is not evidence that the Delta gate or full audit has passed;
+check its own manifest, row counts, stderr, summary, and completion marker.
+
 ## Evaluator status
 
 `llm_detection/evaluation.py` now precomputes raw and frozen-clipped scalar
 scores once per detector/analysis and reuses indexed NumPy arrays for
 calibration, point metrics, clustered bootstrap intervals, and robustness AUC.
-The local no-download suite passed 31 tests with two Torch-dependent skips when
+The local no-download suite passed 38 tests with two Torch-dependent skips when
 this work was reviewed. The implementation has not yet received a full-scale
 before/after Delta timing benchmark, so do not promise a speedup number.
 
