@@ -76,9 +76,13 @@ part of the primary run. Binoculars retains the repository's frozen pair:
 The six single-model detectors receive only the released response text. They
 use tokenizer-default special tokens and causal next-token shifting, with no
 silent length truncation. Binoculars also receives only response text but keeps
-its upstream 512-token truncation rule. The original user prompt remains in the
-prepared provenance but is not passed to any detector. The same policy is used
-for human, original, expert-edited, and LLM-edited versions.
+its upstream 512-token truncation rule. Both Falcon checkpoints use the native
+Transformers implementation rather than the obsolete repository-hosted Falcon
+code, which is incompatible with the frozen Delta environment. This changes no
+checkpoint, tokenizer, model role, or Binoculars formula. The original user
+prompt remains in the prepared provenance but is not passed to any detector.
+The same policy is used for human, original, expert-edited, and LLM-edited
+versions.
 
 The seven reported detectors are log likelihood, rank, log rank, LRR, entropy,
 entropy gap, and Binoculars. Log likelihood, rank, log rank, and LRR are the

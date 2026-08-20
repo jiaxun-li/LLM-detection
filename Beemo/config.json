@@ -63,7 +63,7 @@
     "context_policy": "binoculars_output_only_512",
     "max_tokens": 512,
     "tokenizer_use_fast": null,
-    "trust_remote_code": true
+    "trust_remote_code": false
   },
   "scoring": {
     "detectors": [

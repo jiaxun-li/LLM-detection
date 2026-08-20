@@ -101,6 +101,7 @@ class BeemoDataTests(unittest.TestCase):
         self.assertEqual(config["scoring"]["context_policy"], "detectllm_output_only")
         self.assertIsNone(config["scoring"]["max_tokens"])
         self.assertEqual(config["binoculars"]["max_tokens"], 512)
+        self.assertFalse(config["binoculars"]["trust_remote_code"])
         wrapper = (root / "Beemo" / "delta_beemo.sbatch").read_text(
             encoding="utf-8"
         )
