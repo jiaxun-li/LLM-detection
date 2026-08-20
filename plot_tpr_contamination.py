@@ -69,6 +69,17 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Do not draw bootstrap 95%% confidence bands",
     )
+    parser.add_argument(
+        "--layout",
+        choices=["detector-rows", "detector-columns"],
+        default="detector-rows",
+        help="Arrange detectors vertically (default) or horizontally",
+    )
+    parser.add_argument(
+        "--target-fprs",
+        default="0.01,0.05",
+        help="Comma-separated target FPRs to draw; available: 0.01,0.05",
+    )
     return parser.parse_args()
 
 
@@ -130,7 +141,15 @@ def selected_detectors(
     return ordered + sorted(available - set(ordered))
 
 
-def plot(rows: list[dict[str, Any]], detectors: list[str], output: Path, show_ci: bool) -> None:
+def plot(
+    rows: list[dict[str, Any]],
+    detectors: list[str],
+    output: Path,
+    show_ci: bool,
+    *,
+    layout: str = "detector-rows",
+    target_fprs: tuple[float, ...] = (0.01, 0.05),
+) -> None:
     import matplotlib
 
     matplotlib.use("Agg")
@@ -147,21 +166,29 @@ def plot(rows: list[dict[str, Any]], detectors: list[str], output: Path, show_ci
             )
             grouped[key].append(row)
 
+    if layout == "detector-columns":
+        row_count, column_count = len(target_fprs), len(detectors)
+        figure_size = (max(4.0 * len(detectors), 6.0), 3.8 * len(target_fprs))
+    else:
+        row_count, column_count = len(detectors), len(target_fprs)
+        figure_size = (5.75 * len(target_fprs), max(3.4 * len(detectors), 4.2))
     figure, axes = plt.subplots(
-        len(detectors),
-        2,
-        figsize=(11.5, max(3.4 * len(detectors), 4.2)),
-        dpi=150,
+        row_count,
+        column_count,
+        figsize=figure_size,
+        dpi=120 if layout == "detector-columns" else 150,
         squeeze=False,
         sharex=True,
         sharey=True,
     )
-    target_fprs = (0.01, 0.05)
     legend_handles: dict[str, Any] = {}
 
-    for row_index, detector in enumerate(detectors):
-        for column_index, target_fpr in enumerate(target_fprs):
-            axis = axes[row_index][column_index]
+    for detector_index, detector in enumerate(detectors):
+        for fpr_index, target_fpr in enumerate(target_fprs):
+            if layout == "detector-columns":
+                axis = axes[fpr_index][detector_index]
+            else:
+                axis = axes[detector_index][fpr_index]
             for mode in ("random", "tail"):
                 for aggregation in ("raw", "clipped"):
                     points = sorted(
@@ -201,24 +228,36 @@ def plot(rows: list[dict[str, Any]], detectors: list[str], output: Path, show_ci
                             linewidth=0,
                         )
 
-            axis.set_title(
-                f"{DETECTOR_LABELS.get(detector, detector)} — "
-                f"TPR at {target_fpr:.0%} FPR"
-            )
+            detector_label = DETECTOR_LABELS.get(detector, detector)
+            if layout == "detector-columns" and len(target_fprs) == 1:
+                axis.set_title(detector_label)
+            else:
+                axis.set_title(f"{detector_label} — TPR at {target_fpr:.0%} FPR")
             axis.set_xlim(-0.01, 0.51)
             axis.set_ylim(-0.02, 1.02)
             axis.set_xticks([0.0, 0.1, 0.2, 0.3, 0.4, 0.5])
             axis.set_xticklabels(["0%", "10%", "20%", "30%", "40%", "50%"])
             axis.grid(True, color="#dddddd", linewidth=0.8, alpha=0.8)
-            if column_index == 0:
+            is_first_column = (
+                detector_index == 0
+                if layout == "detector-columns"
+                else fpr_index == 0
+            )
+            is_bottom_row = (
+                fpr_index == len(target_fprs) - 1
+                if layout == "detector-columns"
+                else detector_index == len(detectors) - 1
+            )
+            if is_first_column:
                 axis.set_ylabel("True positive rate")
-            if row_index == len(detectors) - 1:
+            if is_bottom_row:
                 axis.set_xlabel("Requested human-token contamination")
 
     first = rows[0]
+    fpr_label = ", ".join(f"{value:.0%}" for value in target_fprs)
     figure.suptitle(
         f"{first.get('dataset', 'dataset')} — {first.get('model', 'model')}\n"
-        "Random vs. tail contamination; raw vs. clipped aggregation",
+        f"TPR at {fpr_label} FPR; random/tail contamination; raw/clipped",
         fontsize=13,
     )
     labels = ["Random / raw", "Random / clipped", "Tail / raw", "Tail / clipped"]
@@ -244,7 +283,24 @@ def main() -> None:
     args = parse_args()
     rows = read_metrics(args.metrics, args.analysis)
     detectors = selected_detectors(rows, args.detectors)
-    plot(rows, detectors, args.output, not args.no_ci)
+    target_fprs = tuple(
+        float(value.strip())
+        for value in args.target_fprs.split(",")
+        if value.strip()
+    )
+    if not target_fprs or any(
+        not any(abs(value - available) < 1e-12 for available in (0.01, 0.05))
+        for value in target_fprs
+    ):
+        raise ValueError("--target-fprs must contain 0.01 and/or 0.05")
+    plot(
+        rows,
+        detectors,
+        args.output,
+        not args.no_ci,
+        layout=args.layout,
+        target_fprs=target_fprs,
+    )
 
 
 if __name__ == "__main__":

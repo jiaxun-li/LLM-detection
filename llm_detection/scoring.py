@@ -215,20 +215,26 @@ def _load_model(
     dtype: str,
     device: str,
     device_map: Any,
+    *,
+    tokenizer_use_fast: bool | None = True,
+    trust_remote_code: bool = False,
 ) -> tuple[Any, Any, Any]:
     torch = _torch()
     AutoModelForCausalLM, AutoTokenizer = _transformers()
-    tokenizer = AutoTokenizer.from_pretrained(
-        model_id,
-        revision=tokenizer_revision,
-        use_fast=True,
-    )
+    tokenizer_kwargs: dict[str, Any] = {
+        "revision": tokenizer_revision,
+        "trust_remote_code": trust_remote_code,
+    }
+    if tokenizer_use_fast is not None:
+        tokenizer_kwargs["use_fast"] = bool(tokenizer_use_fast)
+    tokenizer = AutoTokenizer.from_pretrained(model_id, **tokenizer_kwargs)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"
     kwargs: dict[str, Any] = {
         "revision": revision,
         "torch_dtype": dtype_from_name(torch, dtype),
+        "trust_remote_code": trust_remote_code,
     }
     if device_map is not None:
         kwargs["device_map"] = device_map
@@ -252,20 +258,58 @@ def _compatible_tokenizers(first: Any, second: Any) -> None:
             raise ValueError("Binoculars performer and observer tokenizers are incompatible")
 
 
-def _encode_row(tokenizer: Any, row: dict[str, Any], max_tokens: int) -> tuple[list[int], int, int]:
-    prompt_ids = tokenizer.encode(row["prompt"], add_special_tokens=False)
-    text_ids = tokenizer.encode(row["text"], add_special_tokens=False)
-    full = prompt_ids + text_ids
-    if len(full) > max_tokens:
-        allowed_text = max_tokens - len(prompt_ids)
-        if allowed_text <= 0:
-            raise ValueError(f"prompt exceeds scoring.max_tokens for {row['sample_id']}")
-        text_ids = text_ids[:allowed_text]
+def _encode_row(
+    tokenizer: Any,
+    row: dict[str, Any],
+    max_tokens: int | None,
+    context_policy: str = "prompt_conditioned_response_only",
+) -> tuple[list[int], int, int]:
+    """Encode one scoring row and identify its shifted-token evidence window.
+
+    The repository's synthetic study keeps its historical prompt-conditioned
+    policy. Beemo's DetectLLM-style baseline instead tokenizes only the released
+    response with tokenizer-default special-token behavior. Binoculars uses the
+    same output-only input but applies its upstream 512-token truncation.
+    """
+    if context_policy == "prompt_conditioned_response_only":
+        if max_tokens is None:
+            raise ValueError("prompt-conditioned scoring requires scoring.max_tokens")
+        prompt_ids = tokenizer.encode(row["prompt"], add_special_tokens=False)
+        text_ids = tokenizer.encode(row["text"], add_special_tokens=False)
         full = prompt_ids + text_ids
-    if not prompt_ids or not text_ids:
-        raise ValueError(f"empty prompt/continuation for {row['sample_id']}")
-    start = len(prompt_ids) - 1
-    return full, start, len(text_ids)
+        if len(full) > int(max_tokens):
+            allowed_text = int(max_tokens) - len(prompt_ids)
+            if allowed_text <= 0:
+                raise ValueError(f"prompt exceeds scoring.max_tokens for {row['sample_id']}")
+            text_ids = text_ids[:allowed_text]
+            full = prompt_ids + text_ids
+        if not prompt_ids or not text_ids:
+            raise ValueError(f"empty prompt/continuation for {row['sample_id']}")
+        return full, len(prompt_ids) - 1, len(text_ids)
+
+    if context_policy == "detectllm_output_only":
+        # Deliberately omit add_special_tokens so each model retains its native
+        # tokenizer default, as in the cited DetectLLM baseline implementation.
+        token_ids = tokenizer.encode(row["text"])
+        if max_tokens is not None and len(token_ids) > int(max_tokens):
+            raise ValueError(
+                f"output exceeds scoring.max_tokens for {row['sample_id']}; "
+                "DetectLLM-style scoring does not silently truncate"
+            )
+    elif context_policy == "binoculars_output_only_512":
+        limit = 512 if max_tokens is None else int(max_tokens)
+        token_ids = tokenizer.encode(
+            row["text"], truncation=True, max_length=limit
+        )
+    else:
+        raise ValueError(f"unknown scoring context policy: {context_policy}")
+
+    if len(token_ids) < 2:
+        raise ValueError(f"fewer than two output tokens for {row['sample_id']}")
+    # Causal shifting scores token_ids[1:] from logits at positions [:-1]. If a
+    # tokenizer inserts BOS, the first text token is therefore scored; otherwise
+    # the first text token is the unscored context token, matching upstream.
+    return token_ids, 0, len(token_ids) - 1
 
 
 def _padded_batch(tokenizer: Any, encoded: Sequence[tuple[list[int], int, int]], device: Any) -> tuple[Any, Any]:
@@ -290,8 +334,18 @@ class TargetModelScorer:
     def __init__(self, model_id: str, revision: str | None, tokenizer_revision: str | None, config: dict[str, Any]):
         self.config = config
         self.model_id = model_id
+        self.scorer_key = str(config.get("scorer_key", model_id))
         self.revision = revision
         self.tokenizer_revision = tokenizer_revision
+        self.context_policy = config.get(
+            "context_policy", "prompt_conditioned_response_only"
+        )
+        self.max_tokens = config.get("max_tokens")
+        self.feature_schema = (
+            "target-token-features-v3-output-only"
+            if self.context_policy == "detectllm_output_only"
+            else "target-token-features-v2"
+        )
         self.tokenizer, self.model, self.device = _load_model(
             model_id,
             revision,
@@ -299,6 +353,8 @@ class TargetModelScorer:
             config["dtype"],
             config["device"],
             config.get("device_map"),
+            tokenizer_use_fast=config.get("tokenizer_use_fast", True),
+            trust_remote_code=bool(config.get("trust_remote_code", False)),
         )
         self.resolved_revision = (
             getattr(self.model.config, "_commit_hash", None) or revision
@@ -310,13 +366,37 @@ class TargetModelScorer:
         )
 
     def token_count(self, row: dict[str, Any]) -> int:
-        return len(self.tokenizer.encode(row["prompt"] + row["text"], add_special_tokens=False))
+        return len(
+            _encode_row(
+                self.tokenizer,
+                row,
+                self.max_tokens,
+                self.context_policy,
+            )[0]
+        )
 
     def validate_existing_row(self, row: dict[str, Any]) -> None:
         """Refuse to append a new feature schema or model revision to an old run."""
-        if row.get("scoring_feature_schema") != "target-token-features-v2":
+        if row.get("scoring_feature_schema") != self.feature_schema:
             raise ValueError(
                 "existing target score rows use a different feature schema; "
+                "choose a new run ID"
+            )
+        if row.get("scoring_model") != self.model_id:
+            raise ValueError(
+                "existing target score rows use a different scoring model; "
+                "choose a new run ID"
+            )
+        if row.get("scorer_key", self.scorer_key) != self.scorer_key:
+            raise ValueError(
+                "existing target score rows use a different scorer key; "
+                "choose a new run ID"
+            )
+        if row.get(
+            "scoring_context_policy", "prompt_conditioned_response_only"
+        ) != self.context_policy:
+            raise ValueError(
+                "existing target score rows use a different context policy; "
                 "choose a new run ID"
             )
         if (
@@ -352,7 +432,12 @@ class TargetModelScorer:
             self.config.get("save_mean_pooled_final_hidden_state", False)
         )
         encoded = [
-            _encode_row(self.tokenizer, row, int(self.config["max_tokens"]))
+            _encode_row(
+                self.tokenizer,
+                row,
+                self.max_tokens,
+                self.context_policy,
+            )
             for row in rows
         ]
         input_ids, attention = _padded_batch(self.tokenizer, encoded, self.device)
@@ -390,9 +475,12 @@ class TargetModelScorer:
             scored_row = {
                 **row,
                 "scoring_model": self.model_id,
+                "scorer_key": self.scorer_key,
                 "scoring_model_revision": self.resolved_revision,
                 "scoring_tokenizer_revision": self.resolved_tokenizer_revision,
-                "scoring_feature_schema": "target-token-features-v2",
+                "scoring_feature_schema": self.feature_schema,
+                "scoring_context_policy": self.context_policy,
+                "scoring_max_tokens": self.max_tokens,
                 "num_scored_tokens": length,
                 "token_features": features,
                 "doc_scores": single_model_doc_scores(features),
@@ -423,6 +511,10 @@ class BinocularsScorer:
     def __init__(self, model_config: dict[str, Any], scoring_config: dict[str, Any]):
         pair = model_config["binoculars"]
         self.config = scoring_config
+        self.context_policy = pair.get(
+            "context_policy", "prompt_conditioned_response_only"
+        )
+        self.max_tokens = pair.get("max_tokens", scoring_config.get("max_tokens"))
         self.performer_id = pair["performer"]
         self.observer_id = pair["observer"]
         self.performer_revision = pair.get("performer_revision")
@@ -434,6 +526,8 @@ class BinocularsScorer:
             scoring_config["dtype"],
             pair["performer_device"],
             None,
+            tokenizer_use_fast=pair.get("tokenizer_use_fast", True),
+            trust_remote_code=bool(pair.get("trust_remote_code", False)),
         )
         observer_tokenizer, self.observer, self.observer_device = _load_model(
             self.observer_id,
@@ -442,6 +536,8 @@ class BinocularsScorer:
             scoring_config["dtype"],
             pair["observer_device"],
             None,
+            tokenizer_use_fast=pair.get("tokenizer_use_fast", True),
+            trust_remote_code=bool(pair.get("trust_remote_code", False)),
         )
         _compatible_tokenizers(self.tokenizer, observer_tokenizer)
         self.performer_resolved_revision = (
@@ -453,13 +549,60 @@ class BinocularsScorer:
             or self.observer_revision
         )
 
+    @property
+    def feature_schema(self) -> str:
+        return (
+            "binoculars-token-features-v2-output-only"
+            if self.context_policy == "binoculars_output_only_512"
+            else "binoculars-token-features-v1"
+        )
+
+    def validate_existing_row(self, row: dict[str, Any]) -> None:
+        if row.get(
+            "scoring_feature_schema", "binoculars-token-features-v1"
+        ) != self.feature_schema:
+            raise ValueError(
+                "existing Binoculars rows use a different feature schema; "
+                "choose a new run ID"
+            )
+        if row.get(
+            "scoring_context_policy", "prompt_conditioned_response_only"
+        ) != self.context_policy:
+            raise ValueError(
+                "existing Binoculars rows use a different context policy; "
+                "choose a new run ID"
+            )
+        expected = {
+            "binoculars_performer_model": self.performer_id,
+            "binoculars_performer_revision": self.performer_resolved_revision,
+            "binoculars_observer_model": self.observer_id,
+            "binoculars_observer_revision": self.observer_resolved_revision,
+        }
+        if any(row.get(key) != value for key, value in expected.items()):
+            raise ValueError(
+                "existing Binoculars rows use different models or revisions; "
+                "choose a new run ID"
+            )
+
     def token_count(self, row: dict[str, Any]) -> int:
-        return len(self.tokenizer.encode(row["prompt"] + row["text"], add_special_tokens=False))
+        return len(
+            _encode_row(
+                self.tokenizer,
+                row,
+                self.max_tokens,
+                self.context_policy,
+            )[0]
+        )
 
     def score_batch(self, rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
         torch = _torch()
         encoded = [
-            _encode_row(self.tokenizer, row, int(self.config["max_tokens"]))
+            _encode_row(
+                self.tokenizer,
+                row,
+                self.max_tokens,
+                self.context_policy,
+            )
             for row in rows
         ]
         performer_ids, performer_attention = _padded_batch(
@@ -498,6 +641,9 @@ class BinocularsScorer:
                     "binoculars_observer_model": self.observer_id,
                     "binoculars_observer_revision": self.observer_resolved_revision,
                     "binoculars_formula": "exp(mean_performer_nll) / exp(mean_H(observer, performer))",
+                    "scoring_context_policy": self.context_policy,
+                    "scoring_max_tokens": self.max_tokens,
+                    "scoring_feature_schema": self.feature_schema,
                     "num_scored_tokens": length,
                     "token_features": {
                         "performer_nll": performer_nll.detach().cpu().tolist(),

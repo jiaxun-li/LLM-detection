@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from llm_detection.scoring import (
+    _encode_row,
     binoculars_score,
     exact_token_features,
     numpy_cross_entropy,
@@ -21,6 +22,48 @@ from llm_detection.generation import length_bucketed
 
 
 class ExactScoringTests(unittest.TestCase):
+    def test_detectllm_output_only_uses_native_special_tokens_and_no_prompt(self) -> None:
+        class RecordingTokenizer:
+            def __init__(self):
+                self.calls = []
+
+            def encode(self, text, **kwargs):
+                self.calls.append((text, kwargs))
+                return [10, 20, 30]
+
+        tokenizer = RecordingTokenizer()
+        encoded = _encode_row(
+            tokenizer,
+            {"sample_id": "sample", "prompt": "ignored", "text": "response"},
+            None,
+            "detectllm_output_only",
+        )
+        self.assertEqual(encoded, ([10, 20, 30], 0, 2))
+        self.assertEqual(tokenizer.calls, [("response", {})])
+
+    def test_binoculars_output_only_truncates_at_512(self) -> None:
+        class RecordingTokenizer:
+            def __init__(self):
+                self.calls = []
+
+            def encode(self, text, **kwargs):
+                self.calls.append((text, kwargs))
+                return list(range(kwargs["max_length"]))
+
+        tokenizer = RecordingTokenizer()
+        encoded = _encode_row(
+            tokenizer,
+            {"sample_id": "sample", "prompt": "ignored", "text": "response"},
+            512,
+            "binoculars_output_only_512",
+        )
+        self.assertEqual(len(encoded[0]), 512)
+        self.assertEqual(encoded[1:], (0, 511))
+        self.assertEqual(
+            tokenizer.calls,
+            [("response", {"truncation": True, "max_length": 512})],
+        )
+
     def test_first_scoring_run_allows_missing_output_file(self) -> None:
         class EmptyScorer:
             def validate_existing_row(self, _row):
@@ -214,6 +257,10 @@ class ExactScoringTests(unittest.TestCase):
             "save_mean_pooled_final_hidden_state": True,
         }
         scorer.model_id = "fake/model"
+        scorer.scorer_key = "fake"
+        scorer.context_policy = "prompt_conditioned_response_only"
+        scorer.max_tokens = 16
+        scorer.feature_schema = "target-token-features-v2"
         scorer.resolved_revision = "fake-model-commit"
         scorer.resolved_tokenizer_revision = "fake-tokenizer-commit"
         scorer.tokenizer = FakeTokenizer()
@@ -252,10 +299,15 @@ class ExactScoringTests(unittest.TestCase):
             "saved_top_k": 10,
             "save_mean_pooled_final_hidden_state": False,
         }
+        scorer.model_id = "fake/model"
+        scorer.scorer_key = "fake/model"
+        scorer.context_policy = "prompt_conditioned_response_only"
+        scorer.feature_schema = "target-token-features-v2"
         scorer.resolved_revision = "model-commit"
         scorer.resolved_tokenizer_revision = "tokenizer-commit"
         row = {
             "scoring_feature_schema": "target-token-features-v2",
+            "scoring_model": "fake/model",
             "scoring_model_revision": "model-commit",
             "scoring_tokenizer_revision": "tokenizer-commit",
             "token_features": {"top_k_token_ids": [[index for index in range(10)]]},

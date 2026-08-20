@@ -291,6 +291,31 @@ Use the following result labels consistently:
 
 ## External benchmarks and interpretation risks
 
+### Beemo realistic-edit primary follow-up
+
+The benchmark-centered redesign is frozen separately in
+[`Beemo/config.json`](Beemo/config.json) and fully specified in
+[`Beemo/SCIENTIFIC_DESIGN.md`](Beemo/SCIENTIFIC_DESIGN.md). It is not a 22nd
+cell and must not be pooled with the 21 synthetic cells. It uses all 2,187
+Beemo record groups, keeps each human/original/expert/six-LLM-edit family in one
+split, and assigns 437/875/875 groups to clipping tuning, human-only
+calibration, and final testing.
+
+The primary positive is the expert-edited machine output and the negative is
+the independent human response. GPT2-XL, OPT-1.3B, Falcon-7B, and Qwen2-7B are
+the four primary reference scorers for the six single-model detectors; Granite
+3.3 8B is optional, and the frozen Falcon pair provides Binoculars. The
+single-model detectors score only released response text with native tokenizer
+special-token behavior and no silent truncation. Binoculars uses output-only
+scoring with its upstream 512-token limit. Clipping tuning gives equal objective
+weight to original, expert, pooled-Llama, and pooled-GPT families. Test
+uncertainty is paired and clustered by Beemo ID. This is a new native benchmark
+protocol, not a frozen-threshold transfer claim from one of the original cells.
+
+The Beemo package has local synthetic coverage only until a real two-GPU Delta
+gate and full run pass. The completed Granite splice audit motivates this
+redesign but does not validate Beemo CUDA execution or scientific outputs.
+
 ### Preregistered Granite-XSum splice-artifact audit
 
 Before interpreting synthetic contamination as realistic human editing, run the

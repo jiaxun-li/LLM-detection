@@ -431,6 +431,34 @@ as the main Transformers backend: completed rows survive interruption, but a
 mid-generation resume does not promise RNG equivalence to an uninterrupted
 run. Use a new audit ID if the frozen protocol changes.
 
+## Beemo expert-edit benchmark
+
+[`Beemo/run_beemo.py`](Beemo/run_beemo.py) is the authoritative entry point for
+the separate realistic-edit study. It orchestrates five stages:
+
+1. download and normalize all nine Beemo variants per record;
+2. score output text with GPT2-XL, OPT-1.3B, Falcon-7B, Qwen2-7B, and, by
+   default, the shared Binoculars pair; optional Granite is an explicit flag;
+3. tune, calibrate, and evaluate under record-group isolation;
+4. create one compact two-by-seven plot per primary scorer;
+5. validate row keys, counts, detectors, and markers.
+
+Large artifacts live below `runs/beemo/<run-id>` and small results below
+`results/beemo/<run-id>`. A full run contains 2,187 × 9 = 19,683 prepared rows
+and the same number of rows in each of four target-scorer packs and the shared
+Binoculars pack. Six single-model detectors × four scorers plus one shared
+Binoculars configuration produce 25 scorer-detector configurations. Across ten
+reported conditions, two aggregations, and two FPRs, this produces 1,000 metric
+rows. Optional Granite adds six configurations and 240 rows.
+
+The Delta gate and full commands are maintained in
+[`Beemo/DELTA_GUIDE.md`](Beemo/DELTA_GUIDE.md). The two-GPU wrapper is
+[`Beemo/delta_beemo.sbatch`](Beemo/delta_beemo.sbatch); it enforces CUDA 12.8
+and work-filesystem links before execution. Convenience single-stage scripts
+exist for preparation, scoring, evaluation, plotting, and validation. A new
+run ID is mandatory when the Beemo split, context policy, scorer, variants,
+clipping objective, calibration, or bootstrap protocol changes.
+
 ## Manifests, completion markers, and resume behavior
 
 For non-selection stages, `run_experiment.py` creates

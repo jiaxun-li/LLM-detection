@@ -87,6 +87,16 @@ and clipping specifications. Audit outputs belong below
 implementation is not evidence that the Delta gate or full audit has passed;
 check its own manifest, row counts, stderr, summary, and completion marker.
 
+The benchmark-centered realistic-edit study lives under `Beemo/`. Its frozen
+local protocol is `Beemo/config.json`; the authoritative entry point is
+`Beemo/run_beemo.py`; and the scientific and Delta instructions are
+`Beemo/SCIENTIFIC_DESIGN.md` and `Beemo/DELTA_GUIDE.md`. It treats expert edits
+as machine-origin positives, keeps all nine variants of a record in one split
+and bootstrap cluster, and uses 437/875/875 records for clipping tuning,
+human-only calibration, and testing. Local synthetic tests are not evidence of
+a real Delta completion; check its own manifest, validation report, score
+counts, and stderr before describing it as passed.
+
 ## Evaluator status
 
 `llm_detection/evaluation.py` now precomputes raw and frozen-clipped scalar
@@ -132,6 +142,13 @@ Completion requires all of the following, not merely a `COMPLETED` Slurm state:
 - row counts and completion markers are present;
 - `metrics.csv` includes all seven detectors and both 1% and 5% FPR results;
 - stderr contains no hidden traceback, CUDA failure, or offload surprise.
+
+For Beemo, use its separate validation contract: 19,683 prepared rows; 19,683
+rows in each of the four primary scorer packs and the shared Binoculars pack;
+1,000 metric rows; seven detector methods across 25 scorer-detector
+configurations; both FPR targets; and completed `prepare`, `score`, `evaluate`,
+`plot`, and `validate` stages. Optional Granite adds one scorer pack, six
+configurations, and 240 metric rows.
 
 ## How to start a new agent session
 

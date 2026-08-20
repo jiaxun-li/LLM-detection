@@ -160,6 +160,22 @@ def export_cell(
     )
     cell_dir.mkdir(parents=True, exist_ok=True)
     plotter.plot(rows, detectors, cell_dir / "all_detectors.png", show_ci)
+    plotter.plot(
+        rows,
+        detectors,
+        cell_dir / "detectors_2x7.png",
+        show_ci,
+        layout="detector-columns",
+    )
+    for target_fpr in (0.01, 0.05):
+        plotter.plot(
+            rows,
+            detectors,
+            cell_dir / f"detectors_row_fpr_{target_fpr * 100:.0f}pct.png",
+            show_ci,
+            layout="detector-columns",
+            target_fprs=(target_fpr,),
+        )
     for detector in detectors:
         plotter.plot(rows, [detector], cell_dir / f"{_slug(detector)}.png", show_ci)
     shutil.copy2(cell.metrics_path, cell_dir / "metrics.csv")
