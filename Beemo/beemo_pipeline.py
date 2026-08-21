@@ -10,7 +10,7 @@ import os
 import platform
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from llm_detection.data import data_row_key
 from llm_detection.io import atomic_write_json, iter_jsonl
@@ -65,6 +65,9 @@ def load_beemo_config(path: str | Path) -> dict[str, Any]:
         )
     if config["scoring"].get("context_policy") != "detectllm_output_only":
         raise ValueError("Beemo single-model scorers must use output-only scoring")
+    gpt2 = next(model for model in models if model["key"] == "gpt2_xl")
+    if int(gpt2.get("scoring", {}).get("max_tokens", 0)) != 1024:
+        raise ValueError("Beemo GPT2-XL scoring must right-truncate at 1024 tokens")
     if config["binoculars"].get("context_policy") != "binoculars_output_only_512":
         raise ValueError("Beemo Binoculars must use its output-only 512-token policy")
     return config
@@ -84,6 +87,45 @@ def _release_cuda() -> None:
             torch.cuda.empty_cache()
     except ImportError:
         pass
+
+
+def _adjustment_summary(
+    rows: Iterable[dict[str, Any]],
+    scorer: TargetModelScorer | BinocularsScorer,
+) -> dict[str, Any]:
+    boundary_token_rows = 0
+    truncated_rows = 0
+    truncated_tokens = 0
+    boundary_cases: list[dict[str, Any]] = []
+    truncated_cases: list[dict[str, Any]] = []
+    for row in rows:
+        info = scorer.adjustment_info(row)
+        identity = {
+            "sample_id": str(row["sample_id"]),
+            "split": str(row["split"]),
+            "beemo_variant": str(row["beemo_variant"]),
+            "original_num_input_tokens": int(info["original_num_input_tokens"]),
+        }
+        if bool(info["boundary_token_added"]):
+            boundary_token_rows += 1
+            boundary_cases.append(identity)
+        removed = int(info["truncated_token_count"])
+        truncated_rows += int(removed > 0)
+        truncated_tokens += removed
+        if removed > 0:
+            truncated_cases.append(
+                {
+                    **identity,
+                    "truncated_token_count": removed,
+                }
+            )
+    return {
+        "boundary_token_rows": boundary_token_rows,
+        "boundary_cases": boundary_cases,
+        "truncated_rows": truncated_rows,
+        "truncated_tokens": truncated_tokens,
+        "truncated_cases": truncated_cases,
+    }
 
 
 def initial_manifest(
@@ -206,6 +248,7 @@ def score_stage(
     score_dir.mkdir(parents=True, exist_ok=True)
     target_counts: dict[str, int] = {}
     target_paths: dict[str, str] = {}
+    target_adjustments: dict[str, dict[str, Any]] = {}
     resolved_scorers: dict[str, dict[str, Any]] = {}
     for model_spec in selected_scoring_models(
         config, include_granite=include_granite
@@ -228,22 +271,30 @@ def score_stage(
         )
         target_counts[scorer_key] = target_count
         target_paths[scorer_key] = str(target_path)
+        target_adjustments[scorer_key] = _adjustment_summary(
+            iter_jsonl(data_path), target
+        )
         resolved_scorers[scorer_key] = {
             "model_id": model_spec["id"],
             "model_revision": target.resolved_revision,
             "tokenizer_revision": target.resolved_tokenizer_revision,
             "context_policy": target.context_policy,
+            "max_tokens": target.max_tokens,
         }
         del target
         _release_cuda()
     binoculars_path = run_dir / "binoculars_scores.jsonl"
     binoculars_count = None
+    binoculars_adjustments = None
     resolved: dict[str, Any] = {}
     if not skip_binoculars:
         model_config = {"binoculars": config["binoculars"]}
         binoculars = BinocularsScorer(model_config, config["scoring"])
         binoculars_count = score_jsonl(
             data_path, binoculars_path, binoculars, config["scoring"]
+        )
+        binoculars_adjustments = _adjustment_summary(
+            iter_jsonl(data_path), binoculars
         )
         resolved.update(
             {
@@ -261,7 +312,9 @@ def score_stage(
     marker = {
         "data_rows": expected,
         "target_score_rows": target_counts,
+        "target_score_adjustments": target_adjustments,
         "binoculars_score_rows": binoculars_count,
+        "binoculars_score_adjustments": binoculars_adjustments,
         "resolved_scorers": resolved_scorers,
         **resolved,
     }
@@ -336,6 +389,11 @@ def validate_artifacts(
         config, include_granite=include_granite
     )
     target_counts: dict[str, int] = {}
+    score_marker = json.loads(
+        (run_dir / "score.complete.json").read_text(encoding="utf-8")
+    )
+    target_adjustments = score_marker.get("target_score_adjustments", {})
+    binoculars_adjustments = score_marker.get("binoculars_score_adjustments")
     for model in selected_models:
         scorer_key = str(model["key"])
         target_rows = list(
@@ -357,7 +415,16 @@ def validate_artifacts(
             row.get("scoring_context_policy") for row in target_rows
         } != {"detectllm_output_only"}:
             raise ValueError(f"Beemo {scorer_key} rows are not output-only")
+        expected_max_tokens = model.get("scoring", {}).get(
+            "max_tokens", config["scoring"].get("max_tokens")
+        )
+        if {row.get("scoring_max_tokens") for row in target_rows} != {
+            expected_max_tokens
+        }:
+            raise ValueError(f"Beemo {scorer_key} rows use the wrong token limit")
         target_counts[scorer_key] = len(target_rows)
+    if set(target_adjustments) != {str(model["key"]) for model in selected_models}:
+        raise ValueError("Beemo score marker lacks scorer adjustment summaries")
     variants_by_id: dict[str, set[str]] = {}
     for row in data_rows:
         variants_by_id.setdefault(str(row["sample_id"]), set()).add(
@@ -377,6 +444,8 @@ def validate_artifacts(
     if any(variants != expected_variants for variants in variants_by_id.values()):
         raise ValueError("at least one Beemo record is missing a text variant")
     if not skip_binoculars:
+        if not isinstance(binoculars_adjustments, dict):
+            raise ValueError("Beemo score marker lacks Binoculars adjustment summary")
         binoculars_rows = list(iter_jsonl(run_dir / "binoculars_scores.jsonl"))
         if {data_row_key(row) for row in binoculars_rows} != set(data_keys):
             raise ValueError("Beemo Binoculars keys disagree with prepared data")
@@ -437,6 +506,8 @@ def validate_artifacts(
         "records": len({str(row["sample_id"]) for row in data_rows}),
         "data_rows": len(data_rows),
         "target_score_rows": target_counts,
+        "target_score_adjustments": target_adjustments,
+        "binoculars_score_adjustments": binoculars_adjustments,
         "scorers": [str(model["key"]) for model in selected_models],
         "detectors": expected_detectors,
         "metrics_rows": summary["metrics_rows"],

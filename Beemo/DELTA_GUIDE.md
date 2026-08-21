@@ -89,6 +89,12 @@ python Beemo/validate_beemo.py --run-id "$RUN_ID" \
 Do not launch the full run unless the job is `COMPLETED`, stderr has no
 traceback, and validation reports `validation_status: pass`.
 
+The validation report also records scorer-specific boundary-token and
+right-truncation counts. In the full dataset, GPT2-XL is expected to add a
+boundary for `144-human` and `1126-expert` and to right-truncate 11 rows at
+1,024 tokens. Falcon, Qwen, and Binoculars add a boundary for the released
+`1126-expert = "."` anomaly; OPT supplies its own native starting token.
+
 ## 3. Submit the full study
 
 The helper creates a unique run ID and preserves the same two-GPU resource

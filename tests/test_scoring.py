@@ -38,8 +38,56 @@ class ExactScoringTests(unittest.TestCase):
             None,
             "detectllm_output_only",
         )
-        self.assertEqual(encoded, ([10, 20, 30], 0, 2))
+        self.assertEqual(encoded[:3], ([10, 20, 30], 0, 2))
+        self.assertEqual(
+            encoded[3],
+            {
+                "original_num_input_tokens": 3,
+                "boundary_token_added": False,
+                "truncated_token_count": 0,
+            },
+        )
         self.assertEqual(tokenizer.calls, [("response", {})])
+
+    def test_output_only_adds_boundary_for_one_token_response(self) -> None:
+        class OneTokenTokenizer:
+            bos_token_id = 99
+            eos_token_id = 98
+
+            def encode(self, text, **kwargs):
+                del text, kwargs
+                return [42]
+
+        encoded = _encode_row(
+            OneTokenTokenizer(),
+            {"sample_id": "144", "prompt": "ignored", "text": "2012"},
+            1024,
+            "detectllm_output_only",
+        )
+        self.assertEqual(encoded[:3], ([99, 42], 0, 1))
+        self.assertEqual(encoded[3]["original_num_input_tokens"], 1)
+        self.assertTrue(encoded[3]["boundary_token_added"])
+        self.assertEqual(encoded[3]["truncated_token_count"], 0)
+
+    def test_output_only_right_truncates_and_records_adjustment(self) -> None:
+        class LongTokenizer:
+            bos_token_id = 99
+            eos_token_id = 98
+
+            def encode(self, text, **kwargs):
+                del text, kwargs
+                return [10, 20, 30, 40, 50]
+
+        encoded = _encode_row(
+            LongTokenizer(),
+            {"sample_id": "long", "prompt": "ignored", "text": "response"},
+            4,
+            "detectllm_output_only",
+        )
+        self.assertEqual(encoded[:3], ([10, 20, 30, 40], 0, 3))
+        self.assertEqual(encoded[3]["original_num_input_tokens"], 5)
+        self.assertFalse(encoded[3]["boundary_token_added"])
+        self.assertEqual(encoded[3]["truncated_token_count"], 1)
 
     def test_binoculars_output_only_truncates_at_512(self) -> None:
         class RecordingTokenizer:
@@ -48,7 +96,7 @@ class ExactScoringTests(unittest.TestCase):
 
             def encode(self, text, **kwargs):
                 self.calls.append((text, kwargs))
-                return list(range(kwargs["max_length"]))
+                return list(range(600))
 
         tokenizer = RecordingTokenizer()
         encoded = _encode_row(
@@ -58,11 +106,10 @@ class ExactScoringTests(unittest.TestCase):
             "binoculars_output_only_512",
         )
         self.assertEqual(len(encoded[0]), 512)
-        self.assertEqual(encoded[1:], (0, 511))
-        self.assertEqual(
-            tokenizer.calls,
-            [("response", {"truncation": True, "max_length": 512})],
-        )
+        self.assertEqual(encoded[1:3], (0, 511))
+        self.assertEqual(encoded[3]["original_num_input_tokens"], 600)
+        self.assertEqual(encoded[3]["truncated_token_count"], 88)
+        self.assertEqual(tokenizer.calls, [("response", {})])
 
     def test_first_scoring_run_allows_missing_output_file(self) -> None:
         class EmptyScorer:
@@ -302,6 +349,7 @@ class ExactScoringTests(unittest.TestCase):
         scorer.model_id = "fake/model"
         scorer.scorer_key = "fake/model"
         scorer.context_policy = "prompt_conditioned_response_only"
+        scorer.max_tokens = 16
         scorer.feature_schema = "target-token-features-v2"
         scorer.resolved_revision = "model-commit"
         scorer.resolved_tokenizer_revision = "tokenizer-commit"
@@ -310,6 +358,7 @@ class ExactScoringTests(unittest.TestCase):
             "scoring_model": "fake/model",
             "scoring_model_revision": "model-commit",
             "scoring_tokenizer_revision": "tokenizer-commit",
+            "scoring_max_tokens": 16,
             "token_features": {"top_k_token_ids": [[index for index in range(10)]]},
         }
         scorer.validate_existing_row(row)

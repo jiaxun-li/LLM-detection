@@ -74,10 +74,20 @@ part of the primary run. Binoculars retains the repository's frozen pair:
 - observer: `tiiuae/falcon-7b`.
 
 The six single-model detectors receive only the released response text. They
-use tokenizer-default special tokens and causal next-token shifting, with no
-silent length truncation. Binoculars also receives only response text but keeps
-its upstream 512-token truncation rule. Both Falcon checkpoints use the native
-Transformers implementation rather than the obsolete repository-hosted Falcon
+use tokenizer-default special tokens and causal next-token shifting. GPT2-XL
+right-truncates the 11 released responses that exceed its native 1,024-token
+context; the other three primary scorers do not truncate any released Beemo
+response. If native tokenization yields a single token, an internal model BOS
+(or EOS boundary when BOS is unavailable) is prepended so that the response
+token has a causal prediction position. This affects GPT2-XL rows `144-human`
+and `1126-expert`, and the latter one-token anomaly also requires the fallback
+for Falcon, Qwen, and Binoculars. The released text is never changed. Every
+affected row's ID, split, variant, original token count, and removed-token count
+are recorded compactly in the completion marker and final validation report;
+the large score packs are not expanded with duplicate audit fields. Binoculars
+also receives only response text and keeps its upstream 512-token truncation rule. Both Falcon
+checkpoints use the native Transformers implementation rather than the obsolete
+repository-hosted Falcon
 code, which is incompatible with the frozen Delta environment. This changes no
 checkpoint, tokenizer, model role, or Binoculars formula. The original user
 prompt remains in the prepared provenance but is not passed to any detector.

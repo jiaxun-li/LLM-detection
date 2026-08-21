@@ -1,5 +1,5 @@
 {
-  "protocol_name": "beemo-expert-edit-output-only-multiscorer-v2",
+  "protocol_name": "beemo-expert-edit-output-only-multiscorer-v3",
   "result_label": "BEEMO_PRIMARY_BENCHMARK",
   "dataset": {
     "id": "toloka/beemo",
@@ -21,7 +21,10 @@
       "id": "openai-community/gpt2-xl",
       "revision": null,
       "tokenizer_revision": null,
-      "enabled": true
+      "enabled": true,
+      "scoring": {
+        "max_tokens": 1024
+      }
     },
     {
       "key": "opt_1_3b",

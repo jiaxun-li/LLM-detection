@@ -263,7 +263,7 @@ def _encode_row(
     row: dict[str, Any],
     max_tokens: int | None,
     context_policy: str = "prompt_conditioned_response_only",
-) -> tuple[list[int], int, int]:
+) -> tuple[list[int], int, int, dict[str, Any]]:
     """Encode one scoring row and identify its shifted-token evidence window.
 
     The repository's synthetic study keeps its historical prompt-conditioned
@@ -277,6 +277,7 @@ def _encode_row(
         prompt_ids = tokenizer.encode(row["prompt"], add_special_tokens=False)
         text_ids = tokenizer.encode(row["text"], add_special_tokens=False)
         full = prompt_ids + text_ids
+        original_num_input_tokens = len(full)
         if len(full) > int(max_tokens):
             allowed_text = int(max_tokens) - len(prompt_ids)
             if allowed_text <= 0:
@@ -285,34 +286,64 @@ def _encode_row(
             full = prompt_ids + text_ids
         if not prompt_ids or not text_ids:
             raise ValueError(f"empty prompt/continuation for {row['sample_id']}")
-        return full, len(prompt_ids) - 1, len(text_ids)
+        return full, len(prompt_ids) - 1, len(text_ids), {
+            "original_num_input_tokens": original_num_input_tokens,
+            "boundary_token_added": False,
+            "truncated_token_count": original_num_input_tokens - len(full),
+        }
 
     if context_policy == "detectllm_output_only":
         # Deliberately omit add_special_tokens so each model retains its native
         # tokenizer default, as in the cited DetectLLM baseline implementation.
         token_ids = tokenizer.encode(row["text"])
+        original_num_input_tokens = len(token_ids)
         if max_tokens is not None and len(token_ids) > int(max_tokens):
-            raise ValueError(
-                f"output exceeds scoring.max_tokens for {row['sample_id']}; "
-                "DetectLLM-style scoring does not silently truncate"
-            )
+            if int(max_tokens) < 2:
+                raise ValueError("output-only scoring.max_tokens must be at least 2")
+            # Keep the beginning of the released response. This is explicit,
+            # model-specific right truncation, never prompt concatenation.
+            token_ids = token_ids[: int(max_tokens)]
     elif context_policy == "binoculars_output_only_512":
         limit = 512 if max_tokens is None else int(max_tokens)
-        token_ids = tokenizer.encode(
-            row["text"], truncation=True, max_length=limit
-        )
+        if limit < 2:
+            raise ValueError("Binoculars max_tokens must be at least 2")
+        token_ids = tokenizer.encode(row["text"])
+        original_num_input_tokens = len(token_ids)
+        token_ids = token_ids[:limit]
     else:
         raise ValueError(f"unknown scoring context policy: {context_policy}")
 
-    if len(token_ids) < 2:
-        raise ValueError(f"fewer than two output tokens for {row['sample_id']}")
+    if not token_ids:
+        raise ValueError(f"zero output tokens for {row['sample_id']}")
+    boundary_token_added = False
+    if len(token_ids) == 1:
+        boundary_token_id = getattr(tokenizer, "bos_token_id", None)
+        if boundary_token_id is None:
+            boundary_token_id = getattr(tokenizer, "eos_token_id", None)
+        if boundary_token_id is None:
+            raise ValueError(
+                f"one output token and no BOS/EOS boundary token for {row['sample_id']}"
+            )
+        token_ids = [int(boundary_token_id), *token_ids]
+        boundary_token_added = True
     # Causal shifting scores token_ids[1:] from logits at positions [:-1]. If a
     # tokenizer inserts BOS, the first text token is therefore scored; otherwise
     # the first text token is the unscored context token, matching upstream.
-    return token_ids, 0, len(token_ids) - 1
+    return token_ids, 0, len(token_ids) - 1, {
+        "original_num_input_tokens": original_num_input_tokens,
+        "boundary_token_added": boundary_token_added,
+        "truncated_token_count": max(
+            original_num_input_tokens - (len(token_ids) - int(boundary_token_added)),
+            0,
+        ),
+    }
 
 
-def _padded_batch(tokenizer: Any, encoded: Sequence[tuple[list[int], int, int]], device: Any) -> tuple[Any, Any]:
+def _padded_batch(
+    tokenizer: Any,
+    encoded: Sequence[tuple[list[int], int, int, dict[str, Any]]],
+    device: Any,
+) -> tuple[Any, Any]:
     torch = _torch()
     maximum = max(len(item[0]) for item in encoded)
     input_ids = torch.full(
@@ -322,7 +353,7 @@ def _padded_batch(tokenizer: Any, encoded: Sequence[tuple[list[int], int, int]],
         device=device,
     )
     attention = torch.zeros_like(input_ids)
-    for index, (token_ids, _, _) in enumerate(encoded):
+    for index, (token_ids, _, _, _) in enumerate(encoded):
         input_ids[index, : len(token_ids)] = torch.tensor(token_ids, device=device)
         attention[index, : len(token_ids)] = 1
     return input_ids, attention
@@ -342,7 +373,7 @@ class TargetModelScorer:
         )
         self.max_tokens = config.get("max_tokens")
         self.feature_schema = (
-            "target-token-features-v3-output-only"
+            "target-token-features-v4-output-only-boundary-truncation"
             if self.context_policy == "detectllm_output_only"
             else "target-token-features-v2"
         )
@@ -375,6 +406,15 @@ class TargetModelScorer:
             )[0]
         )
 
+    def adjustment_info(self, row: dict[str, Any]) -> dict[str, Any]:
+        """Return deterministic boundary/truncation provenance without scoring."""
+        return _encode_row(
+            self.tokenizer,
+            row,
+            self.max_tokens,
+            self.context_policy,
+        )[3]
+
     def validate_existing_row(self, row: dict[str, Any]) -> None:
         """Refuse to append a new feature schema or model revision to an old run."""
         if row.get("scoring_feature_schema") != self.feature_schema:
@@ -397,6 +437,11 @@ class TargetModelScorer:
         ) != self.context_policy:
             raise ValueError(
                 "existing target score rows use a different context policy; "
+                "choose a new run ID"
+            )
+        if row.get("scoring_max_tokens") != self.max_tokens:
+            raise ValueError(
+                "existing target score rows use a different token limit; "
                 "choose a new run ID"
             )
         if (
@@ -459,7 +504,9 @@ class TargetModelScorer:
             # final layer remains live when optional pooling is enabled.
             del model_outputs
         outputs = []
-        for index, (row, (_, start, length)) in enumerate(zip(rows, encoded)):
+        for index, (row, (_, start, length, _)) in enumerate(
+            zip(rows, encoded)
+        ):
             logits = batch_logits[index, start : start + length]
             targets = input_ids[index, start + 1 : start + 1 + length]
             tensor_features = exact_token_features(
@@ -552,7 +599,7 @@ class BinocularsScorer:
     @property
     def feature_schema(self) -> str:
         return (
-            "binoculars-token-features-v2-output-only"
+            "binoculars-token-features-v3-output-only-boundary-truncation"
             if self.context_policy == "binoculars_output_only_512"
             else "binoculars-token-features-v1"
         )
@@ -570,6 +617,11 @@ class BinocularsScorer:
         ) != self.context_policy:
             raise ValueError(
                 "existing Binoculars rows use a different context policy; "
+                "choose a new run ID"
+            )
+        if row.get("scoring_max_tokens") != self.max_tokens:
+            raise ValueError(
+                "existing Binoculars rows use a different token limit; "
                 "choose a new run ID"
             )
         expected = {
@@ -593,6 +645,15 @@ class BinocularsScorer:
                 self.context_policy,
             )[0]
         )
+
+    def adjustment_info(self, row: dict[str, Any]) -> dict[str, Any]:
+        """Return deterministic boundary/truncation provenance without scoring."""
+        return _encode_row(
+            self.tokenizer,
+            row,
+            self.max_tokens,
+            self.context_policy,
+        )[3]
 
     def score_batch(self, rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
         torch = _torch()
@@ -618,7 +679,9 @@ class BinocularsScorer:
                 input_ids=observer_ids, attention_mask=observer_attention
             ).logits[:, :-1, :]
         outputs = []
-        for index, (row, (_, start, length)) in enumerate(zip(rows, encoded)):
+        for index, (row, (_, start, length, _)) in enumerate(
+            zip(rows, encoded)
+        ):
             performer_logits = performer_batch[index, start : start + length].float()
             observer_logits = observer_batch[index, start : start + length].to(
                 self.performer_device

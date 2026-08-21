@@ -100,6 +100,10 @@ class BeemoDataTests(unittest.TestCase):
         self.assertFalse(granite["enabled"])
         self.assertEqual(config["scoring"]["context_policy"], "detectllm_output_only")
         self.assertIsNone(config["scoring"]["max_tokens"])
+        gpt2 = next(
+            model for model in config["scoring_models"] if model["key"] == "gpt2_xl"
+        )
+        self.assertEqual(gpt2["scoring"]["max_tokens"], 1024)
         self.assertEqual(config["binoculars"]["max_tokens"], 512)
         self.assertFalse(config["binoculars"]["trust_remote_code"])
         wrapper = (root / "Beemo" / "delta_beemo.sbatch").read_text(
@@ -183,6 +187,9 @@ class BeemoEvaluationTests(unittest.TestCase):
                             "scoring_model_revision": "test",
                             "scoring_tokenizer_revision": "test",
                             "scoring_context_policy": "detectllm_output_only",
+                            "scoring_max_tokens": model.get("scoring", {}).get(
+                                "max_tokens", config["scoring"].get("max_tokens")
+                            ),
                             "token_features": {"logp": features},
                             "doc_scores": {
                                 "log_likelihood": sum(features) / len(features)
@@ -203,8 +210,24 @@ class BeemoEvaluationTests(unittest.TestCase):
             frozen = json.loads(
                 (results_dir / "frozen_specs.json").read_text(encoding="utf-8")
             )
-            for marker in ("prepare.complete.json", "score.complete.json"):
-                (root / marker).write_text("{}", encoding="utf-8")
+            (root / "prepare.complete.json").write_text("{}", encoding="utf-8")
+            (root / "score.complete.json").write_text(
+                json.dumps(
+                    {
+                        "target_score_adjustments": {
+                            model["key"]: {
+                                "boundary_token_rows": 0,
+                                "boundary_cases": [],
+                                "truncated_rows": 0,
+                                "truncated_tokens": 0,
+                                "truncated_cases": [],
+                            }
+                            for model in config["scoring_models"]
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
             for marker in ("evaluate.complete.json", "plot.complete.json"):
                 (results_dir / marker).write_text("{}", encoding="utf-8")
             for model in config["scoring_models"]:
