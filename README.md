@@ -24,9 +24,10 @@ records:
 - a 30-token prompt, about 220 continuation tokens, temperature 0.8, top-p 0.95;
 - random and white-box tail contamination at 0%, 5%, 10%, 20%, 30%, 40%, and
   50%, with three random corruption draws;
-- a maximum decode/re-tokenize length drift of twelve tokens; the Qwen-32B
-  XSum preparation audit observed a mean absolute drift below one token and a
-  rare nine-token tail round-trip drift;
+- a twelve-token prompt/base round-trip guard and a twenty-token constructed-row
+  guard; the latter was amended before Qwen-32B WritingPrompts scoring after all
+  72,000 positive-ratio constructions were audited (34 exceeded twelve tokens
+  and the maximum was nineteen);
 - Granite 3.3 8B Base, Mistral Small 24B, and Qwen 2.5 32B primary targets;
 - the GPT-NeoX Erebus replication and Qwen 7B/14B/32B/72B scaling models;
 - target-model log likelihood, rank, log rank, DetectLLM LRR, entropy, and

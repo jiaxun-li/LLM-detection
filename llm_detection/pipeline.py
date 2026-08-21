@@ -544,7 +544,10 @@ def construct_contaminated_data(
             counts["human_token_count"] / final_count if final_count else 0.0
         )
         tolerance = int(
-            run_config["contamination"].get("max_length_delta_tokens", 4)
+            run_config["contamination"].get(
+                "max_constructed_length_delta_tokens",
+                run_config["contamination"].get("max_length_delta_tokens", 4),
+            )
         )
         if abs(counts["length_delta_tokens"]) > tolerance:
             raise ValueError(

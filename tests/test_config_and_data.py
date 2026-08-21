@@ -19,11 +19,97 @@ from llm_detection.data import (
     validate_disjoint_splits,
 )
 from llm_detection.io import iter_jsonl
-from llm_detection.pipeline import generate_base_examples, select_source_manifest
+from llm_detection.pipeline import (
+    construct_contaminated_data,
+    generate_base_examples,
+    select_source_manifest,
+)
 from scripts.audit_contamination_roundtrip import audit_cached_constructions
 
 
 class ConfigAndDataTests(unittest.TestCase):
+    def test_constructed_rows_use_their_separate_roundtrip_guard(self) -> None:
+        class OneTokenDriftTokenizer:
+            def encode(self, text, add_special_tokens=False):
+                del add_special_tokens
+                return [int(value) for value in text.split()]
+
+            def decode(
+                self,
+                token_ids,
+                skip_special_tokens=True,
+                clean_up_tokenization_spaces=False,
+            ):
+                del skip_special_tokens, clean_up_tokenization_spaces
+                values = list(token_ids)
+                return " ".join(str(value) for value in values[:-1])
+
+        config = {
+            "run_id": "separate-construction-guard",
+            "dataset": "writingprompts",
+            "target_model": "test-model",
+            "target_model_revision": None,
+            "target_tokenizer_revision": None,
+            "splits": {
+                "clipping_tuning": 1,
+                "calibration": 0,
+                "test": 0,
+            },
+            "contamination": {
+                "ratios": [0.0, 0.5],
+                "random_draws": 1,
+                "corruption_seed": 7,
+                "max_length_delta_tokens": 0,
+                "max_constructed_length_delta_tokens": 1,
+            },
+        }
+        base = {
+            "dataset_id": "dataset-id",
+            "dataset_config": None,
+            "dataset_revision": None,
+            "dataset_resolved_revision": "dataset-commit",
+            "source_id": "source-id",
+            "sample_id": "sample-id",
+            "split": "clipping_tuning",
+            "generation_seed": 101,
+            "target_model_resolved_revision": "model-commit",
+            "target_tokenizer_resolved_revision": "tokenizer-commit",
+            "prompt": "prompt",
+            "human_continuation": "100 101 102 103",
+            "human_token_ids": [100, 101, 102, 103],
+            "llm_continuation": "10 11 12 13",
+            "llm_token_ids": [10, 11, 12, 13],
+        }
+        tail = {
+            "sample_id": "sample-id",
+            "tail_selection_model": "test-model",
+            "tail_selection_model_revision": "model-commit",
+            "tail_selection_tokenizer_revision": "tokenizer-commit",
+            "ranked_candidates": [
+                {"candidate_id": 0, "token_ids": [100, 101, 102, 103], "nll": 1.0}
+            ],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            base_path = root / "base.jsonl"
+            tail_path = root / "tail.jsonl"
+            output_path = root / "data.jsonl"
+            base_path.write_text(json.dumps(base) + "\n", encoding="utf-8")
+            tail_path.write_text(json.dumps(tail) + "\n", encoding="utf-8")
+            count = construct_contaminated_data(
+                config,
+                base_path,
+                tail_path,
+                output_path,
+                OneTokenDriftTokenizer(),
+            )
+            rows = list(iter_jsonl(output_path))
+
+        self.assertEqual(count, 4)
+        self.assertEqual(len(rows), 4)
+        contaminated = [row for row in rows if row["contamination_mode"] != "none"]
+        self.assertEqual({row["length_delta_tokens"] for row in contaminated}, {-1})
+
     def test_roundtrip_audit_covers_every_cached_construction(self) -> None:
         class StableTokenizer:
             def encode(self, text, add_special_tokens=False):
@@ -96,6 +182,9 @@ class ConfigAndDataTests(unittest.TestCase):
         self.assertEqual(config["generation"]["temperature"], 0.8)
         self.assertEqual(config["generation"]["top_p"], 0.95)
         self.assertEqual(config["contamination"]["max_length_delta_tokens"], 12)
+        self.assertEqual(
+            config["contamination"]["max_constructed_length_delta_tokens"], 20
+        )
         self.assertEqual(config["contamination"]["random_draws"], 3)
         self.assertEqual(
             config["contamination"]["ratios"],

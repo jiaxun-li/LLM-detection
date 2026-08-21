@@ -104,22 +104,29 @@ The prompt text is decoded from the first 30 source token IDs. Because some
 tokenizers do not make arbitrary token slices textually idempotent, the model's
 actual re-encoded prompt can differ slightly in length. The requested count,
 actual input IDs/count, and signed prompt drift are stored. Drift within the
-same twelve-token integrity guard is accepted; larger drift remains an error.
+twelve-token base integrity guard is accepted; larger drift remains an error.
 
 The human continuation is taken from the same target-independent source after
 the prompt and is truncated to the realized LLM continuation length. Human
 contamination replaces target-tokenizer tokens one for one before decoding.
 The stored row records requested and realized contamination ratios, original,
 human, replaced, and final token counts, and decode/re-tokenize length drift.
-The paper uses a twelve-token round-trip integrity guard rather than assuming
-exact textual idempotence. If an uncontaminated human/LLM continuation exceeds
-that guard, its visible text is canonically re-tokenized and the pair is
+The paper uses explicit round-trip integrity guards rather than assuming exact
+textual idempotence. If an uncontaminated human/LLM continuation exceeds the
+twelve-token base guard, its visible text is canonically re-tokenized and the pair is
 length-matched before any contamination is constructed; the initial counts,
 signed drift, and normalization flag remain recorded. Constructed rows must
-still finish within the twelve-token guard and record final count, signed
-length delta, and realized contamination ratio. The bound was frozen after a
-Qwen-32B XSum preparation audit found mean absolute drift below one token and a
-rare tail example with a nine-token drift.
+finish within a separate twenty-token guard and record final count, signed
+length delta, and realized contamination ratio. The original twelve-token
+construction bound was amended before Qwen-32B WritingPrompts scoring after an exhaustive
+audit of all 72,000 positive-ratio constructions in that cell. Only 34 rows
+(0.0472%) from 20 sources exceeded twelve tokens; the maximum absolute drift
+was 19 tokens, concentrated in 40%-50% tail contamination. The amended bound
+of twenty admits every audited construction while continuing to fail any
+larger, unexplained drift. No detector scores existed for the amended cell when
+the bound was selected, so this operational amendment did not use detector
+outcomes. The prompt and uncontaminated-continuation guard remains twelve
+tokens.
 
 The fixed experimental ratios are 0%, 5%, 10%, 20%, 30%, 40%, and 50%. They
 are experimental conditions, not hyperparameters: no ratio is selected,

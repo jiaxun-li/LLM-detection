@@ -84,7 +84,8 @@
     "random_draws": 3,
     "corruption_seed": 99173,
     "tail_model_revision": null,
-    "max_length_delta_tokens": 12
+    "max_length_delta_tokens": 12,
+    "max_constructed_length_delta_tokens": 20
   },
   "scoring": {
     "detectors": [

@@ -74,7 +74,12 @@ def audit_cached_constructions(
         if float(value) > 0.0
     ]
     random_draws = int(config["contamination"]["random_draws"])
-    tolerance = int(config["contamination"]["max_length_delta_tokens"])
+    tolerance = int(
+        config["contamination"].get(
+            "max_constructed_length_delta_tokens",
+            config["contamination"]["max_length_delta_tokens"],
+        )
+    )
     conditions: dict[tuple[str, float], list[int]] = collections.defaultdict(list)
     worst: list[dict[str, Any]] = []
 

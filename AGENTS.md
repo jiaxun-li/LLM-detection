@@ -63,8 +63,9 @@ models.
 - Full paper settings are in `configs/paper.json`: 3,000 unique sources,
   78,000 prepared/scored rows per cell, random and tail contamination at
   0/5/10/20/30/40/50 percent, three random draws, and 2,000 clustered-bootstrap
-  repetitions. The paper-wide decode/re-tokenize integrity guard is 12 tokens.
-  Small prompt drift is recorded; a base continuation exceeding the guard is
+  repetitions. The prompt/base decode/re-tokenize integrity guard is 12 tokens,
+  and the separately audited constructed-row guard is 20 tokens. Small prompt
+  drift is recorded; a base continuation exceeding its guard is
   canonically re-tokenized and length-matched before contamination. Initial and
   final counts, signed drift, normalization status, and realized contamination
   ratio remain recorded.
