@@ -47,6 +47,19 @@ def parse_args(default_stage: str | None = None) -> argparse.Namespace:
     parser.add_argument("--skip-binoculars", action="store_true")
     parser.add_argument("--debug-only", action="store_true")
     parser.add_argument(
+        "--num-shards",
+        type=int,
+        help="Deterministic source shards used by independent scorer jobs.",
+    )
+    parser.add_argument(
+        "--index-cache-dir",
+        help="Persistent checksum-keyed RAID SQLite cache directory.",
+    )
+    parser.add_argument(
+        "--reuse-index-path",
+        help="Explicit completed RAID index beside its source run manifest.",
+    )
+    parser.add_argument(
         "--reset-index",
         action="store_true",
         help="Rebuild only this run's RAID SQLite preparation index.",
@@ -63,6 +76,8 @@ def main(default_stage: str | None = None) -> None:
         )
     if args.bootstrap_repetitions is not None and args.bootstrap_repetitions < 0:
         raise ValueError("bootstrap repetitions cannot be negative")
+    if args.num_shards is not None and args.num_shards < 1:
+        raise ValueError("RAID num_shards must be positive")
     workspace = Path(args.workspace).resolve()
     config_path = Path(args.config)
     if not config_path.is_absolute():
@@ -82,6 +97,9 @@ def main(default_stage: str | None = None) -> None:
             limit_sources=args.limit_sources,
             bootstrap_repetitions=args.bootstrap_repetitions,
             skip_binoculars=args.skip_binoculars,
+            num_shards=args.num_shards,
+            index_cache_dir=args.index_cache_dir,
+            reuse_index_path=args.reuse_index_path,
         )
     else:
         manifest = initial_manifest(
@@ -93,6 +111,9 @@ def main(default_stage: str | None = None) -> None:
             bootstrap_repetitions=args.bootstrap_repetitions,
             skip_binoculars=args.skip_binoculars,
             debug_only=args.debug_only,
+            num_shards=args.num_shards or 1,
+            index_cache_dir=args.index_cache_dir,
+            reuse_index_path=args.reuse_index_path,
         )
         manifest["config_path"] = str(config_path)
     was_complete = manifest.get("completion_status") == "complete"
@@ -109,6 +130,10 @@ def main(default_stage: str | None = None) -> None:
                     data_path=args.data_path,
                     limit_sources=args.limit_sources,
                     reset_index=args.reset_index,
+                    data_provenance=manifest.get("data_input"),
+                    num_shards=int(manifest.get("num_score_shards", 1)),
+                    index_cache_dir=manifest.get("index_cache_dir"),
+                    reuse_index_path=manifest.get("reuse_index_path"),
                 )
             elif stage == "score":
                 outputs = score_stage(

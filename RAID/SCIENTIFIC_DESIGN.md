@@ -359,6 +359,22 @@ stable row keys and completion markers. Manifests record resolved revisions,
 Git state, software, accelerator, Slurm, paths, seeds, counts, exclusions, and
 stage status.
 
+### Parallel execution invariance
+
+Parallelization is operational and does not change any scientific sample,
+score, clipping rule, threshold, or metric. After the source split is frozen,
+all 13 rows belonging to a source are assigned to the same score shard by
+`stable_int("raid-score-shard-v1", source_id) % num_shards`. Falcon and
+Binoculars shards are scored independently. The merge stage rejects missing,
+extra, or duplicate stable row keys and rejects model-provenance differences
+across shards before evaluation begins. Preparation and final evaluation run
+once globally; clipping is never fitted separately by shard.
+
+The official CSV relationship index is cached by the CSV SHA-256 digest.
+Reusing a completed cache changes only preparation time. An explicitly adopted
+index from an interrupted run is permitted only for bounded debug validation;
+a full scientific run requires a completed checksum-keyed cache marker.
+
 ## Validation contract
 
 A scientifically complete full run must satisfy all of the following:
@@ -388,7 +404,9 @@ scientific results.
 
 ## Delta execution contract
 
-The Delta wrapper is `RAID/delta_raid.sbatch`. Before any full launch:
+The Delta orchestrator is `RAID/submit_raid.sh`. It submits a CPU preparation
+job, Falcon and Binoculars score arrays, and a dependency-gated CPU finalize
+job. Before any full launch:
 
 ```bash
 cd ~/LLM-detection
@@ -399,9 +417,9 @@ df -h /work/hdd/bhuc/$USER
 
 Both data paths must resolve below `/work/hdd`. Use the existing CUDA 12.8
 environment at `/projects/bhuc/jli101/venvs/delta-smoke` and shared caches under
-`/work/hdd/bhuc/jli101/llm-detection-smoke/`. The wrapper must accept an
-explicit run ID, stage, bounded source limit, and bootstrap override; require a
-two-GPU smoke gate with Binoculars before a full run; and never store full
+`/work/hdd/bhuc/jli101/llm-detection-smoke/`. The workflow must accept an
+explicit run ID, bounded source limit, bootstrap override, and shard count;
+require a two-GPU-per-Binoculars-shard smoke gate before a full run; and never store full
 JSONL score packs under `/u`.
 
 Slurm `COMPLETED` is necessary but insufficient. After every launch, inspect

@@ -239,6 +239,32 @@ class RaidSelectionTests(unittest.TestCase):
                 self.assertEqual(len({row["split"] for row in family}), 1)
             self.assertEqual(len(list(iter_jsonl(directory / "selected.jsonl"))), 5)
 
+    def test_completed_index_can_be_reused_without_reading_the_csv_again(self) -> None:
+        records = []
+        for index in range(5):
+            records.extend(_source_family(f"cached-{index}"))
+
+        class MustNotIterate:
+            def __iter__(self):
+                raise AssertionError("reused index unexpectedly reread the RAID source")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            index_path = directory / "cached.sqlite3"
+            index_raid_records(records, index_path)
+            report = prepare_raid_data(
+                MustNotIterate(),
+                directory / "data.jsonl",
+                directory / "selected.jsonl",
+                directory / "excluded.json",
+                index_path,
+                selection_seed=101,
+                split_seed=202,
+                reuse_index=True,
+            )
+        self.assertTrue(report["index_reused"])
+        self.assertEqual(report["prepared_rows"], 5 * 13)
+
 
 class TokenEditTests(unittest.TestCase):
     def test_standard_minimum_edit_counts(self) -> None:

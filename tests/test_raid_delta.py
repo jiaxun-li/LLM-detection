@@ -43,15 +43,41 @@ class RaidDeltaContractTests(unittest.TestCase):
         self.assertIn('--gpus-per-node=2', submit)
         self.assertIn("bhuc-delta-gpu", submit)
 
+    def test_sharded_delta_graph_separates_cpu_and_gpu_stages(self):
+        prepare = (ROOT / "RAID" / "delta_raid_prepare.sbatch").read_text(encoding="utf-8")
+        falcon = (ROOT / "RAID" / "delta_raid_falcon_shard.sbatch").read_text(encoding="utf-8")
+        binoculars = (ROOT / "RAID" / "delta_raid_binoculars_shard.sbatch").read_text(encoding="utf-8")
+        finalize = (ROOT / "RAID" / "delta_raid_finalize.sbatch").read_text(encoding="utf-8")
+        submit = (ROOT / "RAID" / "submit_raid.sh").read_text(encoding="utf-8")
+
+        self.assertIn("#SBATCH --partition=cpu", prepare)
+        self.assertNotIn("--gpus-per-node", prepare)
+        self.assertIn("--stage prepare", prepare)
+        self.assertIn("--index-cache-dir", prepare)
+        self.assertIn("#SBATCH --gpus-per-node=1", falcon)
+        self.assertIn("--scorer falcon", falcon)
+        self.assertIn("#SBATCH --gpus-per-node=2", binoculars)
+        self.assertIn("--scorer binoculars", binoculars)
+        self.assertIn("#SBATCH --partition=cpu", finalize)
+        self.assertIn("--stage all", finalize)
+        self.assertIn('--array="${ARRAY_RANGE}"', submit)
+        self.assertIn('afterok:${PREP_JOB_ID}', submit)
+        self.assertIn('afterok:${FALCON_JOB_ID}:${BINOCULARS_JOB_ID}', submit)
+        self.assertIn('CPU_ACCOUNT="${CPU_ACCOUNT:-${GPU_ACCOUNT%-gpu}-cpu}"', submit)
+        self.assertIn('--account="${GPU_ACCOUNT}"', submit)
+        self.assertIn('--account="${CPU_ACCOUNT}"', submit)
+        self.assertIn("last_workflow.env", submit)
+
     def test_delta_guide_requires_smoke_validation_before_full_run(self):
         guide = (ROOT / "RAID" / "DELTA_GUIDE.md").read_text(encoding="utf-8")
-        self.assertIn("Mandatory two-GPU smoke gate", guide)
+        self.assertIn("Mandatory four-shard smoke gate", guide)
         self.assertIn("LIMIT_SOURCES=64", guide)
         self.assertIn("BOOTSTRAP_REPETITIONS=100", guide)
         self.assertIn("RAID/validate_raid.py", guide)
         self.assertIn("2,000 bootstrap", guide)
+        self.assertIn("NUM_SHARDS=4", guide)
+        self.assertIn("CPU-only preparation", guide)
 
 
 if __name__ == "__main__":
     unittest.main()
-

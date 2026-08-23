@@ -22,7 +22,9 @@ import os
 import random
 import sqlite3
 import sys
+from collections import Counter
 from dataclasses import dataclass
+from itertools import groupby
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 
@@ -290,49 +292,104 @@ def index_raid_records(
         )
         """
     )
-    connection.execute(
-        "CREATE INDEX IF NOT EXISTS records_source_idx ON records(source_id)"
-    )
-    connection.execute(
-        "CREATE INDEX IF NOT EXISTS records_family_idx ON records(adv_source_id, attack)"
-    )
     counts = {"input_rows": 0, "inserted_rows": 0, "duplicate_rows": 0}
+    pending: list[tuple[str, str, str, str, str, str, str, str]] = []
+
+    def flush() -> None:
+        if not pending:
+            return
+        before = connection.total_changes
+        connection.executemany(
+            "INSERT OR IGNORE INTO records VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            pending,
+        )
+        inserted = connection.total_changes - before
+        counts["inserted_rows"] += inserted
+        if inserted != len(pending):
+            for values in pending:
+                existing = connection.execute(
+                    "SELECT payload FROM records WHERE raid_id = ?", (values[0],)
+                ).fetchone()
+                if existing is None or existing[0] != values[-1]:
+                    raise ValueError(
+                        f"conflicting duplicate RAID id {values[0]!r}"
+                    )
+            counts["duplicate_rows"] += len(pending) - inserted
+        pending.clear()
+        connection.commit()
+
     try:
         for raw in iter_raid_records(source):
             row = normalize_raid_record(raw)
             counts["input_rows"] += 1
             payload = _canonical_payload(row)
-            try:
-                connection.execute(
-                    "INSERT INTO records VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        row["raid_id"],
-                        row["source_id"],
-                        row["raid_adv_source_id"],
-                        row["model"],
-                        row["attack"],
-                        row["domain"],
-                        row["record_kind"],
-                        payload,
-                    ),
+            pending.append(
+                (
+                    row["raid_id"],
+                    row["source_id"],
+                    row["raid_adv_source_id"],
+                    row["model"],
+                    row["attack"],
+                    row["domain"],
+                    row["record_kind"],
+                    payload,
                 )
-                counts["inserted_rows"] += 1
-            except sqlite3.IntegrityError:
-                existing = connection.execute(
-                    "SELECT payload FROM records WHERE raid_id = ?", (row["raid_id"],)
-                ).fetchone()
-                if existing is None or existing[0] != payload:
-                    raise ValueError(
-                        f"conflicting duplicate RAID id {row['raid_id']!r}"
-                    ) from None
-                counts["duplicate_rows"] += 1
-            if counts["input_rows"] % max(1, int(commit_interval)) == 0:
-                connection.commit()
+            )
+            if len(pending) >= max(1, int(commit_interval)):
+                flush()
+        flush()
+        # Building secondary indexes once after the bulk load is substantially
+        # faster than maintaining both trees for every one of millions of rows.
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS records_source_idx ON records(source_id)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS records_family_idx ON records(adv_source_id, attack)"
+        )
         connection.commit()
         counts["indexed_rows"] = int(
             connection.execute("SELECT COUNT(*) FROM records").fetchone()[0]
         )
         return counts
+    finally:
+        connection.close()
+
+
+def inspect_raid_index(index_path: str | Path) -> dict[str, int]:
+    """Validate the reusable index schema and return its stable row counts."""
+    target = Path(index_path)
+    if not target.is_file():
+        raise FileNotFoundError(f"RAID index is missing: {target}")
+    wal = target.with_name(target.name + "-wal")
+    if wal.exists() and wal.stat().st_size:
+        raise ValueError(f"RAID index has a nonempty WAL and may still be active: {wal}")
+    connection = sqlite3.connect(f"file:{target.resolve().as_posix()}?mode=ro", uri=True)
+    try:
+        columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(records)")
+        }
+        expected = {
+            "raid_id",
+            "source_id",
+            "adv_source_id",
+            "model",
+            "attack",
+            "domain",
+            "record_kind",
+            "payload",
+        }
+        if columns != expected:
+            raise ValueError("RAID reusable index has an incompatible records schema")
+        indexes = {row[1] for row in connection.execute("PRAGMA index_list(records)")}
+        if not {"records_source_idx", "records_family_idx"}.issubset(indexes):
+            raise ValueError("RAID reusable index is missing required relationship indexes")
+        rows = int(connection.execute("SELECT COUNT(*) FROM records").fetchone()[0])
+        sources = int(
+            connection.execute("SELECT COUNT(DISTINCT source_id) FROM records").fetchone()[0]
+        )
+        if rows < 1 or sources < 1:
+            raise ValueError("RAID reusable index is empty")
+        return {"indexed_rows": rows, "indexed_sources": sources}
     finally:
         connection.close()
 
@@ -449,114 +506,129 @@ def select_complete_families(
     split_fractions: Mapping[str, float] = DEFAULT_SPLIT_FRACTIONS,
     limit_sources: int | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
-    """Select one uniformly random complete machine family per human source."""
+    """Select one uniformly random complete family using one grouped SQL scan.
+
+    The previous implementation issued one query per source and then one query
+    per candidate generation.  On the public RAID index this became hundreds
+    of thousands of random queries.  This implementation streams rows in
+    ``source_id`` order and builds each source family in memory exactly once.
+    A bounded debug run stops after it has enough complete sources in every
+    core domain; full runs consume the complete index.
+    """
     connection = sqlite3.connect(index_path)
-    connection.row_factory = sqlite3.Row
     selected: list[dict[str, Any]] = []
     exclusions: list[dict[str, Any]] = []
     incomplete_family_count = 0
-    try:
-        source_ids = [
-            row[0]
-            for row in connection.execute(
-                "SELECT DISTINCT source_id FROM records ORDER BY source_id"
+    scanned_sources = 0
+    bounded_scan_complete = limit_sources is None
+    if limit_sources is not None and int(limit_sources) < 1:
+        raise ValueError("limit_sources must be positive")
+    per_domain_target = (
+        None
+        if limit_sources is None
+        else int(math.ceil(int(limit_sources) / len(RAID_DOMAINS)))
+    )
+
+    def add_source(source_id: str, payloads: Iterable[str]) -> None:
+        nonlocal incomplete_family_count, scanned_sources
+        scanned_sources += 1
+        records = [json.loads(payload) for payload in payloads]
+        humans = [row for row in records if row["record_kind"] == "human"]
+        if len(humans) != 1:
+            exclusions.append(
+                {
+                    "source_id": source_id,
+                    "reason": "missing_human" if not humans else "ambiguous_human",
+                    "human_rows": len(humans),
+                }
             )
-        ]
-        for source_id in source_ids:
-            humans = connection.execute(
-                "SELECT payload FROM records WHERE source_id = ? AND record_kind = 'human'",
-                (source_id,),
-            ).fetchall()
-            if len(humans) != 1:
-                exclusions.append(
+            return
+        human = humans[0]
+        clean_rows = sorted(
+            (row for row in records if row["record_kind"] == "machine_clean"),
+            key=lambda row: row["raid_id"],
+        )
+        attacks_by_clean: dict[str, dict[str, list[dict[str, Any]]]] = {}
+        for row in records:
+            if row["record_kind"] == "machine_attack":
+                attacks_by_clean.setdefault(row["raid_adv_source_id"], {}).setdefault(
+                    row["attack"], []
+                ).append(row)
+        complete: list[dict[str, Any]] = []
+        source_incomplete = 0
+        metadata_fields = ("model", "decoding", "repetition_penalty", "domain")
+        for clean in clean_rows:
+            attacks = attacks_by_clean.get(clean["raid_id"], {})
+            metadata_match = clean["domain"] == human["domain"] and all(
+                all(attack_row[field] == clean[field] for field in metadata_fields)
+                for attack_rows in attacks.values()
+                for attack_row in attack_rows
+            )
+            if metadata_match and all(
+                len(attacks.get(name, [])) == 1
+                for name in RAID_ADVERSARIAL_ATTACKS
+            ):
+                complete.append(
                     {
-                        "source_id": source_id,
-                        "reason": "missing_human" if not humans else "ambiguous_human",
-                        "human_rows": len(humans),
+                        "human": human,
+                        "clean": clean,
+                        "attacks": {
+                            name: attacks[name][0]
+                            for name in RAID_ADVERSARIAL_ATTACKS
+                        },
                     }
                 )
-                continue
-            human = json.loads(humans[0][0])
-            clean_rows = connection.execute(
-                "SELECT payload FROM records WHERE source_id = ? AND record_kind = 'machine_clean' ORDER BY raid_id",
-                (source_id,),
-            ).fetchall()
-            complete: list[dict[str, Any]] = []
-            source_incomplete = 0
-            for clean_result in clean_rows:
-                clean = json.loads(clean_result[0])
-                attack_results = connection.execute(
-                    "SELECT attack, payload FROM records WHERE source_id = ? AND adv_source_id = ? AND record_kind = 'machine_attack' ORDER BY attack, raid_id",
-                    (source_id, clean["raid_id"]),
-                ).fetchall()
-                attacks: dict[str, list[dict[str, Any]]] = {}
-                for attack_result in attack_results:
-                    attacks.setdefault(attack_result[0], []).append(
-                        json.loads(attack_result[1])
-                    )
-                metadata_fields = (
-                    "model",
-                    "decoding",
-                    "repetition_penalty",
-                    "domain",
-                )
-                metadata_match = clean["domain"] == human["domain"] and all(
-                    all(
-                        attack_row[field] == clean[field] for field in metadata_fields
-                    )
-                    for attack_rows in attacks.values()
-                    for attack_row in attack_rows
-                )
-                if metadata_match and all(
-                    len(attacks.get(name, [])) == 1
-                    for name in RAID_ADVERSARIAL_ATTACKS
-                ):
-                    complete.append(
-                        {
-                            "human": human,
-                            "clean": clean,
-                            "attacks": {
-                                name: attacks[name][0] for name in RAID_ADVERSARIAL_ATTACKS
-                            },
-                        }
-                    )
-                else:
-                    source_incomplete += 1
-            incomplete_family_count += source_incomplete
-            if not complete:
-                exclusions.append(
-                    {
-                        "source_id": source_id,
-                        "domain": human["domain"],
-                        "reason": "no_complete_machine_family",
-                        "candidate_families": len(clean_rows),
-                        "incomplete_families": source_incomplete,
-                    }
-                )
-                continue
-            complete.sort(key=lambda family: family["clean"]["raid_id"])
-            selected_index = random.Random(stable_int(selection_seed, source_id)).randrange(
-                len(complete)
-            )
-            family = complete[selected_index]
-            selected.append(
+            else:
+                source_incomplete += 1
+        incomplete_family_count += source_incomplete
+        if not complete:
+            exclusions.append(
                 {
                     "source_id": source_id,
                     "domain": human["domain"],
-                    "human": human,
-                    "clean": family["clean"],
-                    "attacks": family["attacks"],
-                    "complete_family_count": len(complete),
-                    "incomplete_family_count": source_incomplete,
-                    "selection_seed": int(selection_seed),
+                    "reason": "no_complete_machine_family",
+                    "candidate_families": len(clean_rows),
+                    "incomplete_families": source_incomplete,
                 }
             )
+            return
+        selected_index = random.Random(
+            stable_int(selection_seed, source_id)
+        ).randrange(len(complete))
+        family = complete[selected_index]
+        selected.append(
+            {
+                "source_id": source_id,
+                "domain": human["domain"],
+                "human": human,
+                "clean": family["clean"],
+                "attacks": family["attacks"],
+                "complete_family_count": len(complete),
+                "incomplete_family_count": source_incomplete,
+                "selection_seed": int(selection_seed),
+            }
+        )
+
+    try:
+        cursor = connection.execute(
+            """
+            SELECT source_id, payload
+            FROM records INDEXED BY records_source_idx
+            WHERE record_kind IN ('human', 'machine_clean', 'machine_attack')
+            ORDER BY source_id
+            """
+        )
+        for source_id, rows in groupby(cursor, key=lambda item: item[0]):
+            add_source(str(source_id), (item[1] for item in rows))
+            if per_domain_target is not None:
+                domain_counts = Counter(row["domain"] for row in selected)
+                if all(domain_counts[name] >= per_domain_target for name in RAID_DOMAINS):
+                    bounded_scan_complete = False
+                    break
     finally:
         connection.close()
 
     if limit_sources is not None:
-        if int(limit_sources) < 1:
-            raise ValueError("limit_sources must be positive")
         selected = _round_robin_limit(selected, int(limit_sources), selection_seed)
     assignments = _split_assignments(selected, split_seed, split_fractions)
     for source in selected:
@@ -576,7 +648,13 @@ def select_complete_families(
         connection.close()
     report = {
         "indexed_sources": indexed_source_count,
-        "available_complete_sources": indexed_source_count - len(exclusions),
+        "available_complete_sources": (
+            indexed_source_count - len(exclusions)
+            if bounded_scan_complete
+            else None
+        ),
+        "selection_scan_complete": bounded_scan_complete,
+        "selection_scanned_sources": scanned_sources,
         "selected_sources": len(selected),
         "excluded_sources": len(exclusions),
         "incomplete_families": incomplete_family_count,
@@ -743,9 +821,19 @@ def prepare_raid_data(
     dataset_revision: str | None = None,
     dataset_fingerprint: str | None = None,
     reset_index: bool = False,
+    reuse_index: bool = False,
 ) -> dict[str, Any]:
     """Index, sample, split, and append the frozen RAID one-to-one dataset."""
-    index_report = index_raid_records(source, index_path, reset=reset_index)
+    if reuse_index and reset_index:
+        raise ValueError("cannot reset a reusable RAID index")
+    index_report = (
+        {**inspect_raid_index(index_path), "index_reused": True}
+        if reuse_index
+        else {
+            **index_raid_records(source, index_path, reset=reset_index),
+            "index_reused": False,
+        }
+    )
     selected, exclusions, selection_report = select_complete_families(
         index_path,
         selection_seed=selection_seed,

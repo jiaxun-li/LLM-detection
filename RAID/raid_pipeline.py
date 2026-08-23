@@ -9,11 +9,13 @@ import hashlib
 import json
 import os
 import platform
+import shutil
 import subprocess
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Iterable
 
+from llm_detection.data import stable_int
 from llm_detection.io import atomic_write_json, iter_jsonl
 from llm_detection.runtime import accelerator_info, software_versions
 
@@ -21,6 +23,8 @@ from RAID.raid_data import (
     RAID_ADVERSARIAL_ATTACKS,
     RAID_ATTACKS,
     RAID_DOMAINS,
+    index_raid_records,
+    inspect_raid_index,
     load_raid_records,
     prepare_raid_data,
     raid_row_key,
@@ -157,6 +161,9 @@ def initial_manifest(
     bootstrap_repetitions: int | None,
     skip_binoculars: bool,
     debug_only: bool,
+    num_shards: int = 1,
+    index_cache_dir: str | Path | None = None,
+    reuse_index_path: str | Path | None = None,
 ) -> dict[str, Any]:
     root = Path(workspace).resolve()
     dirty = _git_value(root, "status", "--porcelain")
@@ -174,6 +181,13 @@ def initial_manifest(
         "limit_sources": limit_sources,
         "bootstrap_repetitions_override": bootstrap_repetitions,
         "binoculars_included": not skip_binoculars,
+        "num_score_shards": int(num_shards),
+        "index_cache_dir": (
+            None if index_cache_dir is None else str(Path(index_cache_dir).resolve())
+        ),
+        "reuse_index_path": (
+            None if reuse_index_path is None else str(Path(reuse_index_path).resolve())
+        ),
         "software_versions": software_versions(),
         "accelerator": accelerator_info(),
         "host": {
@@ -196,6 +210,9 @@ def validate_resume_manifest(
     limit_sources: int | None,
     bootstrap_repetitions: int | None,
     skip_binoculars: bool,
+    num_shards: int | None = None,
+    index_cache_dir: str | Path | None = None,
+    reuse_index_path: str | Path | None = None,
 ) -> None:
     root = Path(manifest.get("workspace", ".")).resolve()
     dirty = _git_value(root, "status", "--porcelain")
@@ -203,12 +220,31 @@ def validate_resume_manifest(
         "run_id": run_id,
         "protocol": config["protocol_name"],
         "protocol_config": config,
-        "data_input": _input_provenance(data_path),
+        "data_input": (
+            manifest.get("data_input")
+            if data_path is None
+            else _input_provenance(data_path)
+        ),
         "limit_sources": limit_sources,
         "bootstrap_repetitions_override": bootstrap_repetitions,
         "binoculars_included": not skip_binoculars,
         "git_commit": _git_value(root, "rev-parse", "HEAD"),
         "dirty_worktree": None if dirty is None else bool(dirty),
+        "num_score_shards": (
+            int(manifest.get("num_score_shards", 1))
+            if num_shards is None
+            else int(num_shards)
+        ),
+        "index_cache_dir": (
+            manifest.get("index_cache_dir")
+            if index_cache_dir is None
+            else str(Path(index_cache_dir).resolve())
+        ),
+        "reuse_index_path": (
+            manifest.get("reuse_index_path")
+            if reuse_index_path is None
+            else str(Path(reuse_index_path).resolve())
+        ),
     }
     for key, value in expected.items():
         if manifest.get(key) != value:
@@ -235,17 +271,88 @@ def prepare_stage(
     data_path: str | Path | None,
     limit_sources: int | None,
     reset_index: bool,
+    data_provenance: dict[str, Any] | None = None,
+    num_shards: int = 1,
+    index_cache_dir: str | Path | None = None,
+    reuse_index_path: str | Path | None = None,
 ) -> dict[str, Any]:
     if data_path is not None:
         source: Any = Path(data_path).resolve()
     else:
         source = load_raid_records(config)
+    provenance = data_provenance or _input_provenance(data_path)
+    if provenance is None:
+        index_path = run_dir / "raid_index.sqlite3"
+        reuse_index = False
+        cache_summary: dict[str, Any] = {"mode": "run_local"}
+    elif reuse_index_path is not None:
+        if limit_sources is None:
+            raise ValueError(
+                "explicit run-index reuse is debug-only; full runs require a completed checksum cache"
+            )
+        index_path = Path(reuse_index_path).resolve()
+        source_manifest_path = index_path.parent / "manifest.json"
+        if not source_manifest_path.is_file():
+            raise ValueError(
+                "an explicitly reused RAID index must sit beside its source manifest.json"
+            )
+        source_manifest = json.loads(source_manifest_path.read_text(encoding="utf-8"))
+        if source_manifest.get("data_input") != provenance:
+            raise ValueError("reused RAID index source manifest has different input data")
+        inspection = inspect_raid_index(index_path)
+        reuse_index = True
+        cache_summary = {
+            "mode": "explicit_reuse",
+            "index_path": str(index_path),
+            "source_run_id": source_manifest.get("run_id"),
+            **inspection,
+        }
+    elif index_cache_dir is not None:
+        cache_root = Path(index_cache_dir).resolve() / str(provenance["sha256"])
+        cache_root.mkdir(parents=True, exist_ok=True)
+        index_path = cache_root / "raid_index.sqlite3"
+        marker_path = cache_root / "index.complete.json"
+        marker = (
+            json.loads(marker_path.read_text(encoding="utf-8"))
+            if marker_path.is_file()
+            else None
+        )
+        expected_marker = {
+            "index_schema": "raid-sqlite-index-v2",
+            "data_size_bytes": int(provenance["size_bytes"]),
+            "data_sha256": str(provenance["sha256"]),
+        }
+        if marker is not None:
+            if any(marker.get(key) != value for key, value in expected_marker.items()):
+                raise ValueError("RAID cache marker disagrees with the input data")
+            inspection = inspect_raid_index(index_path)
+            if any(int(marker.get(key, -1)) != value for key, value in inspection.items()):
+                raise ValueError("RAID cache marker row counts disagree with its index")
+            reuse_index = True
+            cache_summary = {"mode": "cache_hit", "index_path": str(index_path), **inspection}
+        else:
+            build = index_raid_records(source, index_path, reset=True)
+            inspection = inspect_raid_index(index_path)
+            marker = {**expected_marker, **inspection}
+            atomic_write_json(marker_path, marker)
+            reuse_index = True
+            cache_summary = {
+                "mode": "cache_built",
+                "index_path": str(index_path),
+                **build,
+                **inspection,
+            }
+    else:
+        index_path = run_dir / "raid_index.sqlite3"
+        reuse_index = False
+        cache_summary = {"mode": "run_local"}
+
     summary = prepare_raid_data(
         source,
         run_dir / "data.jsonl",
         run_dir / "selected_sources.jsonl",
         run_dir / "excluded_sources.json",
-        run_dir / "raid_index.sqlite3",
+        index_path,
         selection_seed=int(config["selection"]["selection_seed"]),
         split_seed=int(config["selection"]["split_seed"]),
         split_fractions=config["selection"]["split_fractions"],
@@ -253,7 +360,9 @@ def prepare_stage(
         dataset_revision=config["dataset"].get("revision"),
         dataset_fingerprint=config["dataset"].get("fingerprint"),
         reset_index=reset_index,
+        reuse_index=reuse_index,
     )
+    summary["index_cache"] = cache_summary
     summary["expected_paper_sources"] = config["dataset"].get(
         "expected_paper_sources"
     )
@@ -263,11 +372,66 @@ def prepare_stage(
         else "complete_available_labeled_release"
     )
     atomic_write_json(run_dir / "prepare.complete.json", summary)
+    shard_summary = write_prepared_shards(run_dir, int(num_shards))
+    summary["score_shards"] = shard_summary
+    atomic_write_json(run_dir / "prepare.complete.json", summary)
     return {
         "data": str(run_dir / "data.jsonl"),
         "selected_sources": str(run_dir / "selected_sources.jsonl"),
         "prepare_summary": summary,
     }
+
+
+def score_shard_index(source_id: str, num_shards: int) -> int:
+    if int(num_shards) < 1:
+        raise ValueError("num_shards must be positive")
+    return stable_int("raid-score-shard-v1", str(source_id)) % int(num_shards)
+
+
+def shard_data_path(run_dir: Path, shard_index: int, num_shards: int) -> Path:
+    return run_dir / "data_shards" / f"part-{int(shard_index):05d}-of-{int(num_shards):05d}.jsonl"
+
+
+def write_prepared_shards(run_dir: Path, num_shards: int) -> dict[str, Any]:
+    if num_shards < 1:
+        raise ValueError("num_shards must be positive")
+    data_path = run_dir / "data.jsonl"
+    shard_dir = run_dir / "data_shards"
+    temporary = run_dir / "data_shards.tmp"
+    if temporary.exists():
+        shutil.rmtree(temporary)
+    temporary.mkdir(parents=True)
+    handles = [
+        (temporary / path.name).open("w", encoding="utf-8", newline="")
+        for path in (shard_data_path(run_dir, index, num_shards) for index in range(num_shards))
+    ]
+    counts = [0] * num_shards
+    sources: list[set[str]] = [set() for _ in range(num_shards)]
+    try:
+        for row in iter_jsonl(data_path):
+            source_id = str(row["source_id"])
+            index = score_shard_index(source_id, num_shards)
+            handles[index].write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+            counts[index] += 1
+            sources[index].add(source_id)
+    finally:
+        for handle in handles:
+            handle.close()
+    if shard_dir.exists():
+        shutil.rmtree(shard_dir)
+    os.replace(temporary, shard_dir)
+    if any(count == 0 for count in counts):
+        raise ValueError("RAID score sharding produced an empty shard")
+    if any(count != len(source_ids) * (1 + len(RAID_ATTACKS)) for count, source_ids in zip(counts, sources)):
+        raise ValueError("RAID score sharding split a source family")
+    marker = {
+        "assignment": "stable_int('raid-score-shard-v1', source_id) % num_shards",
+        "num_shards": num_shards,
+        "rows_per_shard": counts,
+        "sources_per_shard": [len(values) for values in sources],
+    }
+    atomic_write_json(run_dir / "data_shards.complete.json", marker)
+    return marker
 
 
 def _scoring_adjustments(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
@@ -289,6 +453,202 @@ def _scoring_adjustments(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def score_shard_output_path(
+    run_dir: Path, scorer_name: str, shard_index: int, num_shards: int
+) -> Path:
+    return (
+        run_dir
+        / "score_shards"
+        / f"{scorer_name}-part-{int(shard_index):05d}-of-{int(num_shards):05d}.jsonl"
+    )
+
+
+def _falcon_scorer(config: dict[str, Any]) -> RAIDFalconScorer:
+    scoring = config["scoring"]
+    model = config["models"]["falcon"]
+    return RAIDFalconScorer(
+        {
+            **scoring,
+            "model_id": model["id"],
+            "revision": model.get("revision"),
+            "tokenizer_revision": model.get("tokenizer_revision"),
+            "context_policy": "raid_output_only_512",
+        }
+    )
+
+
+def _binoculars_scorer(config: dict[str, Any]) -> RAIDBinocularsScorer:
+    return RAIDBinocularsScorer(
+        {
+            **config["scoring"],
+            **config["models"]["binoculars"],
+            "context_policy": "binoculars_official_output_only_512",
+        }
+    )
+
+
+def score_shard_stage(
+    run_dir: Path,
+    config: dict[str, Any],
+    *,
+    scorer_name: str,
+    shard_index: int,
+    num_shards: int,
+) -> dict[str, Any]:
+    """Score one immutable prepared source shard without touching the manifest."""
+    if scorer_name not in {"falcon", "binoculars"}:
+        raise ValueError("RAID shard scorer must be falcon or binoculars")
+    if not 0 <= int(shard_index) < int(num_shards):
+        raise ValueError("RAID shard index is outside num_shards")
+    marker = json.loads(
+        (run_dir / "data_shards.complete.json").read_text(encoding="utf-8")
+    )
+    if int(marker.get("num_shards", -1)) != int(num_shards):
+        raise ValueError("prepared RAID shard count disagrees with the scorer job")
+    input_path = shard_data_path(run_dir, shard_index, num_shards)
+    if not input_path.is_file():
+        raise FileNotFoundError(f"prepared RAID score shard is missing: {input_path}")
+    output_path = score_shard_output_path(
+        run_dir, scorer_name, shard_index, num_shards
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    scorer = _falcon_scorer(config) if scorer_name == "falcon" else _binoculars_scorer(config)
+    count = score_raid_jsonl(input_path, output_path, scorer, config["scoring"])
+    resolved = (
+        {
+            "model": scorer.model_id,
+            "model_revision": scorer.resolved_revision,
+            "tokenizer_revision": scorer.resolved_tokenizer_revision,
+            "dtype": scorer.resolved_dtype,
+            "device": scorer.resolved_device,
+        }
+        if scorer_name == "falcon"
+        else {
+            "observer": scorer.observer_id,
+            "observer_revision": scorer.observer_resolved_revision,
+            "observer_tokenizer_revision": scorer.resolved_tokenizer_revision,
+            "performer": scorer.performer_id,
+            "performer_revision": scorer.performer_resolved_revision,
+            "performer_tokenizer_revision": scorer.performer_resolved_tokenizer_revision,
+            "observer_dtype": scorer.observer_dtype,
+            "performer_dtype": scorer.performer_dtype,
+        }
+    )
+    del scorer
+    _release_cuda()
+    expected = int(marker["rows_per_shard"][int(shard_index)])
+    if count != expected:
+        raise ValueError(
+            f"RAID {scorer_name} shard produced {count} rows; expected {expected}"
+        )
+    complete = {
+        "scorer": scorer_name,
+        "shard_index": int(shard_index),
+        "num_shards": int(num_shards),
+        "score_rows": count,
+        "input_path": str(input_path),
+        "output_path": str(output_path),
+        "resolved": resolved,
+        "adjustments": _scoring_adjustments(iter_jsonl(output_path)),
+    }
+    atomic_write_json(output_path.with_suffix(".complete.json"), complete)
+    return complete
+
+
+def _merge_one_scorer(
+    run_dir: Path, scorer_name: str, num_shards: int
+) -> tuple[Path, int, list[dict[str, Any]]]:
+    expected_keys = {raid_row_key(row) for row in iter_jsonl(run_dir / "data.jsonl")}
+    seen: set[tuple[str, str, str]] = set()
+    final_path = run_dir / f"{scorer_name}_scores.jsonl"
+    temporary = final_path.with_suffix(".jsonl.tmp")
+    markers: list[dict[str, Any]] = []
+    schema = (
+        "raid-falcon-token-features-v1"
+        if scorer_name == "falcon"
+        else "raid-binoculars-token-features-v1"
+    )
+    context = (
+        "raid_output_only_512"
+        if scorer_name == "falcon"
+        else "binoculars_official_output_only_512"
+    )
+    with temporary.open("w", encoding="utf-8", newline="") as handle:
+        for index in range(num_shards):
+            shard = score_shard_output_path(run_dir, scorer_name, index, num_shards)
+            marker_path = shard.with_suffix(".complete.json")
+            if not shard.is_file() or not marker_path.is_file():
+                raise FileNotFoundError(
+                    f"RAID {scorer_name} shard {index}/{num_shards} is incomplete"
+                )
+            marker = json.loads(marker_path.read_text(encoding="utf-8"))
+            if (
+                marker.get("scorer") != scorer_name
+                or int(marker.get("shard_index", -1)) != index
+                or int(marker.get("num_shards", -1)) != num_shards
+            ):
+                raise ValueError(f"RAID {scorer_name} shard marker is inconsistent")
+            rows = 0
+            for row in iter_jsonl(shard):
+                key = raid_row_key(row)
+                if key not in expected_keys or key in seen:
+                    raise ValueError(
+                        f"RAID {scorer_name} shard has an unexpected or duplicate key {key!r}"
+                    )
+                if row.get("scoring_feature_schema") != schema:
+                    raise ValueError(f"RAID {scorer_name} shard schema is inconsistent")
+                if row.get("scoring_context_policy") != context or int(
+                    row.get("scoring_max_tokens", -1)
+                ) != 512:
+                    raise ValueError(f"RAID {scorer_name} shard context is inconsistent")
+                seen.add(key)
+                rows += 1
+                handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+            if rows != int(marker.get("score_rows", -1)):
+                raise ValueError(f"RAID {scorer_name} shard marker row count is wrong")
+            markers.append(marker)
+    if seen != expected_keys:
+        raise ValueError(
+            f"RAID {scorer_name} merged keys are incomplete: {len(seen)}/{len(expected_keys)}"
+        )
+    os.replace(temporary, final_path)
+    return final_path, len(seen), markers
+
+
+def merge_score_shards(run_dir: Path, num_shards: int) -> dict[str, Any]:
+    falcon_path, falcon_count, falcon_markers = _merge_one_scorer(
+        run_dir, "falcon", num_shards
+    )
+    binoculars_path, binoculars_count, binoculars_markers = _merge_one_scorer(
+        run_dir, "binoculars", num_shards
+    )
+    if falcon_count != binoculars_count:
+        raise ValueError("merged RAID scorer packs have different row counts")
+    for scorer_name, markers in (
+        ("falcon", falcon_markers),
+        ("binoculars", binoculars_markers),
+    ):
+        resolved = {json.dumps(marker.get("resolved"), sort_keys=True) for marker in markers}
+        if len(resolved) != 1:
+            raise ValueError(f"RAID {scorer_name} shards used different model provenance")
+    marker = {
+        "data_rows": falcon_count,
+        "falcon_score_rows": falcon_count,
+        "binoculars_score_rows": binoculars_count,
+        "num_score_shards": int(num_shards),
+        "falcon_shards": falcon_markers,
+        "binoculars_shards": binoculars_markers,
+        "falcon_adjustments": _scoring_adjustments(iter_jsonl(falcon_path)),
+        "binoculars_adjustments": _scoring_adjustments(iter_jsonl(binoculars_path)),
+    }
+    atomic_write_json(run_dir / "score.complete.json", marker)
+    return {
+        "falcon_scores": str(falcon_path),
+        "binoculars_scores": str(binoculars_path),
+        "score_summary": marker,
+    }
+
+
 def score_stage(
     run_dir: Path,
     config: dict[str, Any],
@@ -298,6 +658,15 @@ def score_stage(
     data_path = run_dir / "data.jsonl"
     if not data_path.is_file():
         raise FileNotFoundError(f"prepared RAID data is missing: {data_path}")
+    shard_marker = run_dir / "data_shards.complete.json"
+    if shard_marker.is_file():
+        num_shards = int(
+            json.loads(shard_marker.read_text(encoding="utf-8"))["num_shards"]
+        )
+        if num_shards > 1:
+            if skip_binoculars:
+                raise ValueError("sharded RAID merge requires Binoculars")
+            return merge_score_shards(run_dir, num_shards)
     scoring = config["scoring"]
     falcon_model = config["models"]["falcon"]
     falcon_config = {
@@ -553,6 +922,25 @@ def validate_artifacts(
             raise ValueError(f"RAID {name} scoring limit is not 512")
         score_counts[name] = len(rows)
 
+    score_marker = json.loads(
+        (run_dir / "score.complete.json").read_text(encoding="utf-8")
+    )
+    num_score_shards = int(score_marker.get("num_score_shards", 1))
+    if num_score_shards > 1:
+        prepared_shards = json.loads(
+            (run_dir / "data_shards.complete.json").read_text(encoding="utf-8")
+        )
+        if int(prepared_shards.get("num_shards", -1)) != num_score_shards:
+            raise ValueError("RAID prepared and scored shard counts disagree")
+        for scorer_name in ("falcon", "binoculars"):
+            shard_markers = score_marker.get(f"{scorer_name}_shards", [])
+            if len(shard_markers) != num_score_shards or {
+                int(marker.get("shard_index", -1)) for marker in shard_markers
+            } != set(range(num_score_shards)):
+                raise ValueError(
+                    f"RAID {scorer_name} completion does not cover every score shard"
+                )
+
     evaluation_counts = json.loads(
         (results_dir / "evaluation_counts.json").read_text(encoding="utf-8")
     )
@@ -642,6 +1030,7 @@ def validate_artifacts(
         "debug_only": limit_sources is not None,
         **prepared,
         "score_rows": score_counts,
+        "num_score_shards": num_score_shards,
         "detectors": list(EXPECTED_DETECTORS),
         "target_fpr": 0.05,
         "bootstrap_repetitions": repetitions,

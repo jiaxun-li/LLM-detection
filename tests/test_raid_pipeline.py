@@ -5,13 +5,17 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from llm_detection.io import atomic_write_json
+from llm_detection.io import atomic_write_json, iter_jsonl
 from RAID.raid_data import RAID_ADVERSARIAL_ATTACKS
 from RAID.raid_pipeline import (
     evaluate_stage,
     load_raid_config,
+    merge_score_shards,
     plot_stage,
+    score_shard_index,
+    score_shard_output_path,
     validate_artifacts,
+    write_prepared_shards,
 )
 
 
@@ -116,6 +120,48 @@ def _packs() -> tuple[list[dict], list[dict], list[dict]]:
 
 
 class RaidPipelineTests(unittest.TestCase):
+    def test_source_shards_are_family_atomic_and_merge_exactly(self):
+        prepared, falcon, binoculars = _packs()
+        with tempfile.TemporaryDirectory() as temporary:
+            run_dir = Path(temporary) / "run"
+            run_dir.mkdir()
+            _write_jsonl(run_dir / "data.jsonl", prepared)
+            marker = write_prepared_shards(run_dir, 4)
+            self.assertEqual(sum(marker["rows_per_shard"]), len(prepared))
+            self.assertEqual(sum(marker["sources_per_shard"]), 24)
+
+            source_shards: dict[str, set[int]] = {}
+            for index in range(4):
+                path = run_dir / "data_shards" / f"part-{index:05d}-of-00004.jsonl"
+                for row in iter_jsonl(path):
+                    source_shards.setdefault(row["source_id"], set()).add(index)
+            self.assertTrue(all(len(values) == 1 for values in source_shards.values()))
+
+            for scorer_name, rows in (("falcon", falcon), ("binoculars", binoculars)):
+                by_shard = [[] for _ in range(4)]
+                for row in rows:
+                    by_shard[score_shard_index(row["source_id"], 4)].append(row)
+                for index, shard_rows in enumerate(by_shard):
+                    path = score_shard_output_path(run_dir, scorer_name, index, 4)
+                    _write_jsonl(path, shard_rows)
+                    atomic_write_json(
+                        path.with_suffix(".complete.json"),
+                        {
+                            "scorer": scorer_name,
+                            "shard_index": index,
+                            "num_shards": 4,
+                            "score_rows": len(shard_rows),
+                            "resolved": {"test": True},
+                        },
+                    )
+
+            merged = merge_score_shards(run_dir, 4)
+            self.assertEqual(merged["score_summary"]["data_rows"], len(prepared))
+            self.assertEqual(
+                len((run_dir / "falcon_scores.jsonl").read_text(encoding="utf-8").splitlines()),
+                len(prepared),
+            )
+
     def test_cpu_evaluate_plot_validate_contract(self):
         root = Path(__file__).resolve().parents[1]
         config = load_raid_config(root / "RAID" / "config.json")
