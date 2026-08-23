@@ -124,6 +124,25 @@ class RaidLoaderTests(unittest.TestCase):
             self.assertEqual(len(list(iter_raid_records(csv_path))), 2)
             self.assertEqual(len(list(iter_raid_records(jsonl_path))), 2)
 
+    def test_reads_csv_generation_larger_than_python_default_field_limit(self) -> None:
+        record = _row(
+            raid_id="long-row",
+            source_id="long-source",
+            model="human",
+            generation="x" * 200_000,
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            csv_path = Path(temporary) / "raid-long.csv"
+            with csv_path.open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=list(record))
+                writer.writeheader()
+                writer.writerow(record)
+
+            loaded = list(iter_raid_records(csv_path))
+
+        self.assertEqual(len(loaded), 1)
+        self.assertEqual(len(loaded[0]["generation"]), 200_000)
+
     def test_accepts_dataframe_like_records(self) -> None:
         class Frame:
             def to_dict(self, orient: str) -> list[dict[str, object]]:

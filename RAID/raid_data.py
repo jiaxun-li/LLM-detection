@@ -21,6 +21,7 @@ import math
 import os
 import random
 import sqlite3
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, Sequence
@@ -74,6 +75,22 @@ DEFAULT_SPLIT_FRACTIONS = {
     "calibration": 0.2,
     "test": 0.4,
 }
+
+
+def _allow_large_csv_fields() -> None:
+    """Raise the process-wide CSV field limit to the platform maximum.
+
+    RAID generations can exceed Python's conservative 128 KiB default.  The
+    accepted maximum is platform-dependent, so reduce ``sys.maxsize`` only if
+    the C CSV parser reports that the value itself is too large.
+    """
+    limit = sys.maxsize
+    while True:
+        try:
+            csv.field_size_limit(limit)
+            return
+        except OverflowError:
+            limit //= 10
 
 
 def _missing(value: Any) -> bool:
@@ -196,6 +213,7 @@ def iter_raid_records(source: Any) -> Iterator[dict[str, Any]]:
                 yield dict(row)
             return
         if suffix in {".csv", ".tsv"}:
+            _allow_large_csv_fields()
             with path.open("r", encoding="utf-8", newline="") as handle:
                 reader = csv.DictReader(handle, delimiter="\t" if suffix == ".tsv" else ",")
                 for row in reader:

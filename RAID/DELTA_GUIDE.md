@@ -76,11 +76,22 @@ JOB_ID=$(sbatch --parsable \
 
 echo "submitted_job_id=$JOB_ID"
 echo "raid_run_id=$RUN_ID"
+
+STATE_FILE="/work/hdd/bhuc/$USER/raid/last_smoke.env"
+{
+  printf 'export JOB_ID=%q\n' "$JOB_ID"
+  printf 'export RUN_ID=%q\n' "$RUN_ID"
+  printf 'export DATA_PATH=%q\n' "$DATA_PATH"
+} > "$STATE_FILE"
+echo "saved_state=$STATE_FILE"
 ```
 
 Monitor and validate:
 
 ```bash
+# Run this first after opening a new login shell.
+source /work/hdd/bhuc/$USER/raid/last_smoke.env
+
 squeue -j "$JOB_ID"
 tail -F "logs/raid-$JOB_ID.out"
 
