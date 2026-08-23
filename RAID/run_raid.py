@@ -102,6 +102,11 @@ def main(default_stage: str | None = None) -> None:
             reuse_index_path=args.reuse_index_path,
         )
     else:
+        if args.data_path is not None:
+            print(
+                f"RAID initialization: hashing input provenance for {args.data_path}",
+                flush=True,
+            )
         manifest = initial_manifest(
             args.run_id,
             workspace,
@@ -115,6 +120,7 @@ def main(default_stage: str | None = None) -> None:
             index_cache_dir=args.index_cache_dir,
             reuse_index_path=args.reuse_index_path,
         )
+        print("RAID initialization: input provenance complete", flush=True)
         manifest["config_path"] = str(config_path)
     was_complete = manifest.get("completion_status") == "complete"
     atomic_write_json(manifest_path, manifest)

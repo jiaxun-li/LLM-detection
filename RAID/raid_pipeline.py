@@ -284,6 +284,7 @@ def prepare_stage(
     if provenance is None:
         index_path = run_dir / "raid_index.sqlite3"
         reuse_index = False
+        fast_reuse_validation = False
         cache_summary: dict[str, Any] = {"mode": "run_local"}
     elif reuse_index_path is not None:
         if limit_sources is None:
@@ -299,8 +300,13 @@ def prepare_stage(
         source_manifest = json.loads(source_manifest_path.read_text(encoding="utf-8"))
         if source_manifest.get("data_input") != provenance:
             raise ValueError("reused RAID index source manifest has different input data")
-        inspection = inspect_raid_index(index_path)
+        print(
+            "RAID preparation: fast validation of bounded-smoke reused index",
+            flush=True,
+        )
+        inspection = inspect_raid_index(index_path, exhaustive=False)
         reuse_index = True
+        fast_reuse_validation = True
         cache_summary = {
             "mode": "explicit_reuse",
             "index_path": str(index_path),
@@ -308,6 +314,7 @@ def prepare_stage(
             **inspection,
         }
     elif index_cache_dir is not None:
+        fast_reuse_validation = False
         cache_root = Path(index_cache_dir).resolve() / str(provenance["sha256"])
         cache_root.mkdir(parents=True, exist_ok=True)
         index_path = cache_root / "raid_index.sqlite3"
@@ -326,7 +333,10 @@ def prepare_stage(
             if any(marker.get(key) != value for key, value in expected_marker.items()):
                 raise ValueError("RAID cache marker disagrees with the input data")
             inspection = inspect_raid_index(index_path)
-            if any(int(marker.get(key, -1)) != value for key, value in inspection.items()):
+            if any(
+                int(marker.get(key, -1)) != int(inspection[key])
+                for key in ("indexed_rows", "indexed_sources")
+            ):
                 raise ValueError("RAID cache marker row counts disagree with its index")
             reuse_index = True
             cache_summary = {"mode": "cache_hit", "index_path": str(index_path), **inspection}
@@ -345,8 +355,13 @@ def prepare_stage(
     else:
         index_path = run_dir / "raid_index.sqlite3"
         reuse_index = False
+        fast_reuse_validation = False
         cache_summary = {"mode": "run_local"}
 
+    print(
+        f"RAID preparation: selecting source families from {index_path}",
+        flush=True,
+    )
     summary = prepare_raid_data(
         source,
         run_dir / "data.jsonl",
@@ -361,6 +376,7 @@ def prepare_stage(
         dataset_fingerprint=config["dataset"].get("fingerprint"),
         reset_index=reset_index,
         reuse_index=reuse_index,
+        fast_reuse_validation=fast_reuse_validation,
     )
     summary["index_cache"] = cache_summary
     summary["expected_paper_sources"] = config["dataset"].get(
@@ -372,9 +388,17 @@ def prepare_stage(
         else "complete_available_labeled_release"
     )
     atomic_write_json(run_dir / "prepare.complete.json", summary)
+    print(
+        f"RAID preparation: writing {int(num_shards)} family-atomic score shards",
+        flush=True,
+    )
     shard_summary = write_prepared_shards(run_dir, int(num_shards))
     summary["score_shards"] = shard_summary
     atomic_write_json(run_dir / "prepare.complete.json", summary)
+    print(
+        f"RAID preparation: complete with {summary['selected_sources']} sources",
+        flush=True,
+    )
     return {
         "data": str(run_dir / "data.jsonl"),
         "selected_sources": str(run_dir / "selected_sources.jsonl"),

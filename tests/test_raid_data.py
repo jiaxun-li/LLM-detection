@@ -261,8 +261,10 @@ class RaidSelectionTests(unittest.TestCase):
                 selection_seed=101,
                 split_seed=202,
                 reuse_index=True,
+                fast_reuse_validation=True,
             )
         self.assertTrue(report["index_reused"])
+        self.assertEqual(report["validation_mode"], "schema_and_record_sample")
         self.assertEqual(report["prepared_rows"], 5 * 13)
 
 

@@ -355,8 +355,10 @@ def index_raid_records(
         connection.close()
 
 
-def inspect_raid_index(index_path: str | Path) -> dict[str, int]:
-    """Validate the reusable index schema and return its stable row counts."""
+def inspect_raid_index(
+    index_path: str | Path, *, exhaustive: bool = True
+) -> dict[str, Any]:
+    """Validate a reusable index, optionally without full-table count scans."""
     target = Path(index_path)
     if not target.is_file():
         raise FileNotFoundError(f"RAID index is missing: {target}")
@@ -383,13 +385,29 @@ def inspect_raid_index(index_path: str | Path) -> dict[str, int]:
         indexes = {row[1] for row in connection.execute("PRAGMA index_list(records)")}
         if not {"records_source_idx", "records_family_idx"}.issubset(indexes):
             raise ValueError("RAID reusable index is missing required relationship indexes")
+        if not exhaustive:
+            sample = connection.execute(
+                "SELECT raid_id, source_id, payload FROM records LIMIT 1"
+            ).fetchone()
+            if sample is None or not all(sample):
+                raise ValueError("RAID reusable index has no valid sample record")
+            json.loads(sample[2])
+            return {
+                "indexed_rows": None,
+                "indexed_sources": None,
+                "validation_mode": "schema_and_record_sample",
+            }
         rows = int(connection.execute("SELECT COUNT(*) FROM records").fetchone()[0])
         sources = int(
             connection.execute("SELECT COUNT(DISTINCT source_id) FROM records").fetchone()[0]
         )
         if rows < 1 or sources < 1:
             raise ValueError("RAID reusable index is empty")
-        return {"indexed_rows": rows, "indexed_sources": sources}
+        return {
+            "indexed_rows": rows,
+            "indexed_sources": sources,
+            "validation_mode": "exhaustive_counts",
+        }
     finally:
         connection.close()
 
@@ -639,13 +657,17 @@ def select_complete_families(
     for source in selected:
         split_domain_counts.setdefault(source["split"], {}).setdefault(source["domain"], 0)
         split_domain_counts[source["split"]][source["domain"]] += 1
-    connection = sqlite3.connect(index_path)
-    try:
-        indexed_source_count = int(
-            connection.execute("SELECT COUNT(DISTINCT source_id) FROM records").fetchone()[0]
-        )
-    finally:
-        connection.close()
+    indexed_source_count: int | None = None
+    if limit_sources is None:
+        connection = sqlite3.connect(index_path)
+        try:
+            indexed_source_count = int(
+                connection.execute(
+                    "SELECT COUNT(DISTINCT source_id) FROM records"
+                ).fetchone()[0]
+            )
+        finally:
+            connection.close()
     report = {
         "indexed_sources": indexed_source_count,
         "available_complete_sources": (
@@ -822,12 +844,18 @@ def prepare_raid_data(
     dataset_fingerprint: str | None = None,
     reset_index: bool = False,
     reuse_index: bool = False,
+    fast_reuse_validation: bool = False,
 ) -> dict[str, Any]:
     """Index, sample, split, and append the frozen RAID one-to-one dataset."""
     if reuse_index and reset_index:
         raise ValueError("cannot reset a reusable RAID index")
     index_report = (
-        {**inspect_raid_index(index_path), "index_reused": True}
+        {
+            **inspect_raid_index(
+                index_path, exhaustive=not bool(fast_reuse_validation)
+            ),
+            "index_reused": True,
+        }
         if reuse_index
         else {
             **index_raid_records(source, index_path, reset=reset_index),
