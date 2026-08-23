@@ -89,6 +89,10 @@ def load_raid_config(path: str | Path) -> dict[str, Any]:
         raise ValueError("RAID scoring must right-truncate at 512 input tokens")
     if config["scoring"].get("truncation_side") != "right":
         raise ValueError("RAID scoring must use right truncation")
+    if bool(config["scoring"].get("trust_remote_code", False)):
+        raise ValueError(
+            "RAID Falcon models must use Transformers' native implementation"
+        )
     evaluation = config["evaluation"]
     if float(evaluation.get("target_fpr", -1)) != 0.05:
         raise ValueError("RAID reports only TPR at 5% FPR")

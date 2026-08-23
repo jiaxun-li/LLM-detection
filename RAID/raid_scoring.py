@@ -134,7 +134,12 @@ def encode_scored_window(
         raise ValueError("RAID scoring max_tokens must be at least 2")
     if "text" not in row:
         raise ValueError("RAID scoring row is missing text")
-    token_ids = [int(value) for value in tokenizer.encode(row["text"])]
+    # Tokenize the complete document for the truncation/edit audit, but suppress
+    # Transformers' misleading model-limit warning: only the right-truncated
+    # window below is ever passed to the model.
+    token_ids = [
+        int(value) for value in tokenizer.encode(row["text"], verbose=False)
+    ]
     original_count = len(token_ids)
     if original_count == 0:
         raise ValueError(f"zero output tokens for RAID row {raid_row_key(row)!r}")

@@ -96,7 +96,7 @@ class RAIDScoringTests(unittest.TestCase):
         self.assertEqual(window.original_num_input_tokens, 5)
         self.assertEqual(window.truncated_token_count, 1)
         self.assertFalse(window.boundary_token_added)
-        self.assertEqual(tokenizer.calls, [("response", {})])
+        self.assertEqual(tokenizer.calls, [("response", {"verbose": False})])
 
     def test_one_token_window_adds_audited_boundary_and_scores_text_token(self):
         tokenizer = FakeTokenizer({"one": [42]})

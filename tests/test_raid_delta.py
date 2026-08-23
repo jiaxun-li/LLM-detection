@@ -27,6 +27,7 @@ class RaidDeltaContractTests(unittest.TestCase):
             "tiiuae/falcon-7b-instruct",
         )
         self.assertEqual(config["scoring"]["max_tokens"], 512)
+        self.assertFalse(config["scoring"]["trust_remote_code"])
 
     def test_delta_wrapper_has_storage_gpu_and_resume_guards(self):
         wrapper = (ROOT / "RAID" / "delta_raid.sbatch").read_text(encoding="utf-8")

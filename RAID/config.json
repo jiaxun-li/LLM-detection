@@ -67,7 +67,7 @@
     "length_bucket_width": 64,
     "vocab_chunk_size": 8192,
     "tokenizer_use_fast": true,
-    "trust_remote_code": true
+    "trust_remote_code": false
   },
   "evaluation": {
     "target_fpr": 0.05,
