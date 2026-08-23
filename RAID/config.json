@@ -1,0 +1,95 @@
+{
+  "protocol_name": "raid-one-family-universal-clipping-v1",
+  "result_label": "RAID_EXTERNAL_BENCHMARK",
+  "dataset": {
+    "loader": "raid_bench",
+    "split": "train",
+    "include_adversarial": true,
+    "source_url": "https://dataset.raid-bench.xyz/train.csv",
+    "local_path": null,
+    "expected_paper_sources": 14971,
+    "recognized_full_source_counts": [13371, 14971],
+    "required_attacks": [
+      "alternative_spelling",
+      "article_deletion",
+      "homoglyph",
+      "insert_paragraphs",
+      "number",
+      "paraphrase",
+      "perplexity_misspelling",
+      "synonym",
+      "upper_lower",
+      "whitespace",
+      "zero_width_space"
+    ]
+  },
+  "selection": {
+    "selection_seed": 260823,
+    "split_seed": 260824,
+    "split_fractions": {
+      "clipping_tuning": 0.4,
+      "calibration": 0.2,
+      "test": 0.4
+    }
+  },
+  "models": {
+    "falcon": {
+      "id": "tiiuae/falcon-7b",
+      "revision": null,
+      "tokenizer_revision": null
+    },
+    "binoculars": {
+      "observer": "tiiuae/falcon-7b",
+      "observer_revision": null,
+      "performer": "tiiuae/falcon-7b-instruct",
+      "performer_revision": null,
+      "observer_device": "cuda:0",
+      "performer_device": "cuda:1"
+    }
+  },
+  "scoring": {
+    "detectors": [
+      "log_likelihood",
+      "rank",
+      "log_rank",
+      "lrr",
+      "entropy",
+      "entropy_gap",
+      "binoculars"
+    ],
+    "context_policy": "raid_output_only_512",
+    "max_tokens": 512,
+    "truncation_side": "right",
+    "dtype": "bf16",
+    "device": "cuda:0",
+    "batch_size": 8,
+    "microbatch_size": 4,
+    "length_bucket_width": 64,
+    "vocab_chunk_size": 8192,
+    "tokenizer_use_fast": true,
+    "trust_remote_code": true
+  },
+  "evaluation": {
+    "target_fpr": 0.05,
+    "clipping_quantiles": [0.8, 0.85, 0.9, 0.95, 0.975, 0.99, 0.995],
+    "attack_weight": 0.8,
+    "clean_weight": 0.2,
+    "bootstrap_repetitions": 2000,
+    "bootstrap_seed": 260825,
+    "contamination_min_bin_count": 250,
+    "contamination_max_positive_bins": 4,
+    "published_binoculars_tpr": {
+      "none": 0.796,
+      "paraphrase": 0.803,
+      "synonym": 0.435,
+      "perplexity_misspelling": 0.780,
+      "homoglyph": 0.377,
+      "whitespace": 0.701,
+      "article_deletion": 0.743
+    }
+  },
+  "paths": {
+    "runs": "runs/raid",
+    "results": "results/raid"
+  }
+}

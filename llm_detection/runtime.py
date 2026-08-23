@@ -38,6 +38,8 @@ def software_versions() -> dict[str, str]:
         "accelerate",
         "vllm",
         "pandas",
+        "rapidfuzz",
+        "matplotlib",
     ]
     result = {"python": platform.python_version()}
     for package in packages:

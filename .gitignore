@@ -5,9 +5,15 @@ __pycache__/
 .venv/
 venv/
 .cache/
-logs/
-runs/
-results/
+
+# Machine-local artifacts.  No trailing slash on runs/results/logs so the
+# rules also match Delta symlinks, not only ordinary directories.
+/downloads
+/logs
+/runs
+/results
+/runs.home-backup-*
+/results.home-backup-*
 smoke_results/
 
 # Keep generated results local unless intentionally publishing a frozen run.
