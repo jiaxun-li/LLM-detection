@@ -55,6 +55,7 @@ class RaidDeltaContractTests(unittest.TestCase):
         self.assertNotIn("--gpus-per-node", prepare)
         self.assertIn("--stage prepare", prepare)
         self.assertIn("--index-cache-dir", prepare)
+        self.assertIn("--adopt-prepared-run-dir", prepare)
         self.assertIn("#SBATCH --gpus-per-node=1", falcon)
         self.assertIn("--scorer falcon", falcon)
         self.assertIn("#SBATCH --gpus-per-node=2", binoculars)
@@ -68,6 +69,7 @@ class RaidDeltaContractTests(unittest.TestCase):
         self.assertIn('--account="${GPU_ACCOUNT}"', submit)
         self.assertIn('--account="${CPU_ACCOUNT}"', submit)
         self.assertIn("last_workflow.env", submit)
+        self.assertIn("ADOPT_PREPARED_RUN_DIR", submit)
 
     def test_delta_guide_requires_smoke_validation_before_full_run(self):
         guide = (ROOT / "RAID" / "DELTA_GUIDE.md").read_text(encoding="utf-8")

@@ -374,6 +374,10 @@ The official CSV relationship index is cached by the CSV SHA-256 digest.
 Reusing a completed cache changes only preparation time. An explicitly adopted
 index from an interrupted run is permitted only for bounded debug validation;
 a full scientific run requires a completed checksum-keyed cache marker.
+Completed bounded prepared artifacts may be adopted by a corrected scoring run
+only after exact validation of dataset provenance, selection/split settings,
+source count, row keys, shard count, and shard assignments. The new manifest
+records the source run and Git commit; no scores are adopted.
 
 ## Validation contract
 

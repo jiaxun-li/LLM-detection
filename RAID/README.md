@@ -12,6 +12,10 @@ evaluation receive appropriate resources:
 bash RAID/submit_raid.sh
 ```
 
+A completed bounded preparation can be adopted under a corrected run ID by
+setting `ADOPT_PREPARED_RUN_DIR`; adoption verifies exact prepared and shard
+keys before scoring begins.
+
 `run_raid_shard.py` is called only by the Slurm array wrappers. Do not launch
 multiple copies of `run_raid.py --stage score` against one run directory.
 

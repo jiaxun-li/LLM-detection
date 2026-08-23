@@ -16,6 +16,7 @@ from llm_detection.io import atomic_write_json
 
 from RAID.raid_pipeline import (
     STAGES,
+    adopt_prepared_stage,
     evaluate_stage,
     initial_manifest,
     load_raid_config,
@@ -60,6 +61,10 @@ def parse_args(default_stage: str | None = None) -> argparse.Namespace:
         help="Explicit completed RAID index beside its source run manifest.",
     )
     parser.add_argument(
+        "--adopt-prepared-run-dir",
+        help="Completed preparation to validate and adopt under this new run ID.",
+    )
+    parser.add_argument(
         "--reset-index",
         action="store_true",
         help="Rebuild only this run's RAID SQLite preparation index.",
@@ -78,11 +83,31 @@ def main(default_stage: str | None = None) -> None:
         raise ValueError("bootstrap repetitions cannot be negative")
     if args.num_shards is not None and args.num_shards < 1:
         raise ValueError("RAID num_shards must be positive")
+    if args.adopt_prepared_run_dir and (
+        args.reuse_index_path or args.reset_index or args.data_path
+    ):
+        raise ValueError(
+            "adopted preparation cannot be combined with data/index preparation options"
+        )
     workspace = Path(args.workspace).resolve()
     config_path = Path(args.config)
     if not config_path.is_absolute():
         config_path = workspace / config_path
     config = load_raid_config(config_path)
+    adopted_data_provenance = None
+    if args.adopt_prepared_run_dir:
+        source_manifest_path = (
+            Path(args.adopt_prepared_run_dir).resolve() / "manifest.json"
+        )
+        if not source_manifest_path.is_file():
+            raise FileNotFoundError(
+                f"adopted preparation manifest is missing: {source_manifest_path}"
+            )
+        adopted_data_provenance = json.loads(
+            source_manifest_path.read_text(encoding="utf-8")
+        ).get("data_input")
+        if adopted_data_provenance is None:
+            raise ValueError("adopted preparation manifest lacks input provenance")
     run_dir, results_dir = run_paths(workspace, config, args.run_id)
     run_dir.mkdir(parents=True, exist_ok=True)
     results_dir.mkdir(parents=True, exist_ok=True)
@@ -100,6 +125,7 @@ def main(default_stage: str | None = None) -> None:
             num_shards=args.num_shards,
             index_cache_dir=args.index_cache_dir,
             reuse_index_path=args.reuse_index_path,
+            adopt_prepared_run_dir=args.adopt_prepared_run_dir,
         )
     else:
         if args.data_path is not None:
@@ -119,6 +145,8 @@ def main(default_stage: str | None = None) -> None:
             num_shards=args.num_shards or 1,
             index_cache_dir=args.index_cache_dir,
             reuse_index_path=args.reuse_index_path,
+            data_provenance=adopted_data_provenance,
+            adopt_prepared_run_dir=args.adopt_prepared_run_dir,
         )
         print("RAID initialization: input provenance complete", flush=True)
         manifest["config_path"] = str(config_path)
@@ -130,17 +158,27 @@ def main(default_stage: str | None = None) -> None:
             if args.stage == "all" and stage in manifest["completed_stages"]:
                 continue
             if stage == "prepare":
-                outputs = prepare_stage(
-                    run_dir,
-                    config,
-                    data_path=args.data_path,
-                    limit_sources=args.limit_sources,
-                    reset_index=args.reset_index,
-                    data_provenance=manifest.get("data_input"),
-                    num_shards=int(manifest.get("num_score_shards", 1)),
-                    index_cache_dir=manifest.get("index_cache_dir"),
-                    reuse_index_path=manifest.get("reuse_index_path"),
-                )
+                if manifest.get("adopt_prepared_run_dir"):
+                    outputs = adopt_prepared_stage(
+                        run_dir,
+                        config,
+                        source_run_dir=manifest["adopt_prepared_run_dir"],
+                        limit_sources=args.limit_sources,
+                        num_shards=int(manifest.get("num_score_shards", 1)),
+                        data_provenance=manifest.get("data_input"),
+                    )
+                else:
+                    outputs = prepare_stage(
+                        run_dir,
+                        config,
+                        data_path=args.data_path,
+                        limit_sources=args.limit_sources,
+                        reset_index=args.reset_index,
+                        data_provenance=manifest.get("data_input"),
+                        num_shards=int(manifest.get("num_score_shards", 1)),
+                        index_cache_dir=manifest.get("index_cache_dir"),
+                        reuse_index_path=manifest.get("reuse_index_path"),
+                    )
             elif stage == "score":
                 outputs = score_stage(
                     run_dir, config, skip_binoculars=args.skip_binoculars

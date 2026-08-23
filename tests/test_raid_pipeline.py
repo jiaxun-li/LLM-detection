@@ -8,6 +8,7 @@ from pathlib import Path
 from llm_detection.io import atomic_write_json, iter_jsonl
 from RAID.raid_data import RAID_ADVERSARIAL_ATTACKS
 from RAID.raid_pipeline import (
+    adopt_prepared_stage,
     evaluate_stage,
     load_raid_config,
     merge_score_shards,
@@ -120,6 +121,68 @@ def _packs() -> tuple[list[dict], list[dict], list[dict]]:
 
 
 class RaidPipelineTests(unittest.TestCase):
+    def test_adopts_completed_preparation_with_exact_shard_validation(self):
+        root = Path(__file__).resolve().parents[1]
+        config = load_raid_config(root / "RAID" / "config.json")
+        prepared, _, _ = _packs()
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            source = workspace / "source-run"
+            destination = workspace / "destination-run"
+            source.mkdir()
+            destination.mkdir()
+            _write_jsonl(source / "data.jsonl", prepared)
+            _write_jsonl(
+                source / "selected_sources.jsonl",
+                [{"source_id": f"source-{index}"} for index in range(24)],
+            )
+            atomic_write_json(source / "excluded_sources.json", {"excluded": []})
+            shard_summary = write_prepared_shards(source, 4)
+            atomic_write_json(
+                source / "prepare.complete.json",
+                {
+                    "selected_sources": 24,
+                    "prepared_rows": len(prepared),
+                    "score_shards": shard_summary,
+                },
+            )
+            source_config = json.loads(json.dumps(config))
+            source_config["scoring"]["trust_remote_code"] = True
+            provenance = {
+                "path": "/work/hdd/test/raid.csv",
+                "size_bytes": 123,
+                "sha256": "abc",
+            }
+            atomic_write_json(
+                source / "manifest.json",
+                {
+                    "run_id": "old-preparation",
+                    "git_commit": "old-commit",
+                    "protocol_config": source_config,
+                    "data_input": provenance,
+                    "limit_sources": 24,
+                    "num_score_shards": 4,
+                    "completed_stages": ["prepare"],
+                },
+            )
+
+            result = adopt_prepared_stage(
+                destination,
+                config,
+                source_run_dir=source,
+                limit_sources=24,
+                num_shards=4,
+                data_provenance=provenance,
+            )
+            summary = result["prepare_summary"]
+            self.assertEqual(summary["adopted_preparation"]["source_run_id"], "old-preparation")
+            self.assertEqual(summary["adopted_preparation"]["validated_rows"], len(prepared))
+            self.assertEqual(
+                list(iter_jsonl(destination / "data.jsonl")),
+                list(iter_jsonl(source / "data.jsonl")),
+            )
+            self.assertTrue((destination / "data_shards.complete.json").is_file())
+
     def test_source_shards_are_family_atomic_and_merge_exactly(self):
         prepared, falcon, binoculars = _packs()
         with tempfile.TemporaryDirectory() as temporary:

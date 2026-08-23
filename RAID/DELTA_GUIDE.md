@@ -50,6 +50,13 @@ the original manifest's input SHA-256 and validates the SQLite schema and
 relationship indexes. Omit `REUSE_INDEX_PATH` when no such index exists; the
 CPU job will build the persistent checksum cache instead.
 
+If a previous bounded run already completed preparation, prefer adopting its
+prepared artifacts instead of reading the CSV or SQLite index again. Adoption
+requires the same dataset provenance, source limit, split/selection protocol,
+and shard count. It validates every prepared key and shard assignment, copies
+the immutable preparation under the new run ID, and records its source run and
+Git commit in `prepare.complete.json`.
+
 ```bash
 cd ~/LLM-detection
 mkdir -p logs
@@ -63,6 +70,8 @@ export RAID_RUN_ID="raid-sharded-smoke-$(date -u +%Y%m%dT%H%M%SZ)"
 
 # Optional bounded-smoke salvage only:
 # export REUSE_INDEX_PATH="$(readlink -f runs/raid/<old-run-id>/raid_index.sqlite3)"
+# Or adopt a completed bounded preparation:
+# export ADOPT_PREPARED_RUN_DIR="$(readlink -f runs/raid/<prepared-run-id>)"
 
 bash RAID/submit_raid.sh
 ```

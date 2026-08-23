@@ -168,6 +168,8 @@ def initial_manifest(
     num_shards: int = 1,
     index_cache_dir: str | Path | None = None,
     reuse_index_path: str | Path | None = None,
+    data_provenance: dict[str, Any] | None = None,
+    adopt_prepared_run_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     root = Path(workspace).resolve()
     dirty = _git_value(root, "status", "--porcelain")
@@ -181,7 +183,11 @@ def initial_manifest(
         "git_commit": _git_value(root, "rev-parse", "HEAD"),
         "dirty_worktree": None if dirty is None else bool(dirty),
         "protocol_config": config,
-        "data_input": _input_provenance(data_path),
+        "data_input": (
+            data_provenance
+            if data_provenance is not None
+            else _input_provenance(data_path)
+        ),
         "limit_sources": limit_sources,
         "bootstrap_repetitions_override": bootstrap_repetitions,
         "binoculars_included": not skip_binoculars,
@@ -191,6 +197,11 @@ def initial_manifest(
         ),
         "reuse_index_path": (
             None if reuse_index_path is None else str(Path(reuse_index_path).resolve())
+        ),
+        "adopt_prepared_run_dir": (
+            None
+            if adopt_prepared_run_dir is None
+            else str(Path(adopt_prepared_run_dir).resolve())
         ),
         "software_versions": software_versions(),
         "accelerator": accelerator_info(),
@@ -217,6 +228,7 @@ def validate_resume_manifest(
     num_shards: int | None = None,
     index_cache_dir: str | Path | None = None,
     reuse_index_path: str | Path | None = None,
+    adopt_prepared_run_dir: str | Path | None = None,
 ) -> None:
     root = Path(manifest.get("workspace", ".")).resolve()
     dirty = _git_value(root, "status", "--porcelain")
@@ -249,6 +261,11 @@ def validate_resume_manifest(
             if reuse_index_path is None
             else str(Path(reuse_index_path).resolve())
         ),
+        "adopt_prepared_run_dir": (
+            manifest.get("adopt_prepared_run_dir")
+            if adopt_prepared_run_dir is None
+            else str(Path(adopt_prepared_run_dir).resolve())
+        ),
     }
     for key, value in expected.items():
         if manifest.get(key) != value:
@@ -266,6 +283,119 @@ def _release_cuda() -> None:
             torch.cuda.empty_cache()
     except ImportError:
         pass
+
+
+def adopt_prepared_stage(
+    run_dir: Path,
+    config: dict[str, Any],
+    *,
+    source_run_dir: str | Path,
+    limit_sources: int | None,
+    num_shards: int,
+    data_provenance: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Adopt a validated immutable preparation under a new scoring manifest."""
+    source = Path(source_run_dir).resolve()
+    if source == run_dir.resolve():
+        raise ValueError("RAID cannot adopt preparation from the destination run")
+    source_manifest_path = source / "manifest.json"
+    if not source_manifest_path.is_file():
+        raise FileNotFoundError(
+            f"adopted RAID preparation manifest is missing: {source_manifest_path}"
+        )
+    source_manifest = json.loads(source_manifest_path.read_text(encoding="utf-8"))
+    if "prepare" not in source_manifest.get("completed_stages", []):
+        raise ValueError("adopted RAID source did not complete preparation")
+    if source_manifest.get("limit_sources") != limit_sources:
+        raise ValueError("adopted RAID preparation used a different source limit")
+    if int(source_manifest.get("num_score_shards", 1)) != int(num_shards):
+        raise ValueError("adopted RAID preparation used a different shard count")
+    if source_manifest.get("data_input") != data_provenance:
+        raise ValueError("adopted RAID preparation used a different input dataset")
+    source_config = source_manifest.get("protocol_config", {})
+    for section in ("dataset", "selection"):
+        if source_config.get(section) != config.get(section):
+            raise ValueError(
+                f"adopted RAID preparation used a different {section} configuration"
+            )
+
+    required = (
+        "selected_sources.jsonl",
+        "excluded_sources.json",
+        "data.jsonl",
+        "prepare.complete.json",
+        "data_shards.complete.json",
+    )
+    missing = [name for name in required if not (source / name).is_file()]
+    source_shards = source / "data_shards"
+    if missing or not source_shards.is_dir():
+        raise FileNotFoundError(
+            f"adopted RAID preparation is incomplete: files={missing}, "
+            f"data_shards={source_shards.is_dir()}"
+        )
+
+    prepared_rows = list(iter_jsonl(source / "data.jsonl"))
+    prepared = _validate_prepared_rows(
+        prepared_rows, set(config["dataset"]["required_attacks"])
+    )
+    if limit_sources is not None and prepared["sources"] != int(limit_sources):
+        raise ValueError("adopted RAID preparation has the wrong source count")
+    prepared_keys = {raid_row_key(row) for row in prepared_rows}
+    if len(prepared_keys) != len(prepared_rows):
+        raise ValueError("adopted RAID preparation has duplicate row keys")
+    shard_marker = json.loads(
+        (source / "data_shards.complete.json").read_text(encoding="utf-8")
+    )
+    if int(shard_marker.get("num_shards", -1)) != int(num_shards):
+        raise ValueError("adopted RAID shard marker has the wrong shard count")
+    shard_keys: set[tuple[str, str, str]] = set()
+    for index in range(int(num_shards)):
+        path = source_shards / f"part-{index:05d}-of-{int(num_shards):05d}.jsonl"
+        if not path.is_file():
+            raise FileNotFoundError(f"adopted RAID data shard is missing: {path}")
+        for row in iter_jsonl(path):
+            key = raid_row_key(row)
+            if key in shard_keys:
+                raise ValueError("adopted RAID data shards contain duplicate keys")
+            if score_shard_index(str(row["source_id"]), int(num_shards)) != index:
+                raise ValueError("adopted RAID data shard split a source family")
+            shard_keys.add(key)
+    if shard_keys != prepared_keys:
+        raise ValueError("adopted RAID data shards do not exactly cover prepared data")
+
+    for name in required:
+        shutil.copy2(source / name, run_dir / name)
+    destination_shards = run_dir / "data_shards"
+    temporary_shards = run_dir / "data_shards.adopt.tmp"
+    if temporary_shards.exists():
+        shutil.rmtree(temporary_shards)
+    shutil.copytree(source_shards, temporary_shards)
+    if destination_shards.exists():
+        shutil.rmtree(destination_shards)
+    os.replace(temporary_shards, destination_shards)
+
+    summary = json.loads(
+        (run_dir / "prepare.complete.json").read_text(encoding="utf-8")
+    )
+    summary["adopted_preparation"] = {
+        "source_run_id": source_manifest.get("run_id"),
+        "source_run_dir": str(source),
+        "source_git_commit": source_manifest.get("git_commit"),
+        "validated_sources": prepared["sources"],
+        "validated_rows": prepared["data_rows"],
+        "validation": "exact_prepared_and_shard_keys",
+    }
+    atomic_write_json(run_dir / "prepare.complete.json", summary)
+    print(
+        f"RAID preparation: adopted {prepared['sources']} sources and "
+        f"{prepared['data_rows']} rows from {source}",
+        flush=True,
+    )
+    return {
+        "data": str(run_dir / "data.jsonl"),
+        "selected_sources": str(run_dir / "selected_sources.jsonl"),
+        "prepare_summary": summary,
+    }
 
 
 def prepare_stage(
