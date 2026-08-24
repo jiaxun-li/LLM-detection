@@ -16,6 +16,8 @@ from RAID.raid_data import measure_realized_contamination
 DETECTORS = tuple(ALL_METHODS)
 QUANTILE_GRID = (0.80, 0.85, 0.90, 0.95, 0.975, 0.99, 0.995)
 TARGET_FPR = .05
+RATE_ADAPTIVE_CUTPOINTS = (.05, .10, .20, .50)
+RATE_ADAPTIVE_BIN_INDICES = (1, 2, 3, 4)
 PUBLISHED_BINOCULARS_TPR = {"none":.796,"paraphrase":.803,"synonym":.435,
     "perplexity_misspelling":.780,"homoglyph":.377,"whitespace":.701,"article_deletion":.743}
 FEATURES = {
@@ -152,26 +154,51 @@ def select_universal_specification(d,direction,h,clean,attacks,quantiles=QUANTIL
         if j>best_j+1e-12:best_j=j;best=dict(spec)
     return best,diagnostics
 
+def select_rate_adaptive_specification(
+    d,direction,h,clean,bin_rows,universal_spec,min_tuning_rows,quantiles=QUANTILE_GRID
+):
+    """Fit one bound within a fixed contamination-rate bin.
+
+    Attacks represented in the bin are equally weighted.  A sparse bin uses
+    the already-frozen universal rule; fixed rate boundaries are never moved.
+    """
+    attack_rows=defaultdict(list)
+    for r in bin_rows:attack_rows[condition(r)].append(r)
+    attack_rows=dict(sorted(attack_rows.items()))
+    counts={name:len(values) for name,values in attack_rows.items()}
+    if len(bin_rows)<min_tuning_rows or not attack_rows:
+        return dict(universal_spec),[],{
+          "fallback_to_universal":True,"fallback_reason":"insufficient_tuning_rows",
+          "n_tuning_machine":len(bin_rows),"attack_counts":counts,
+        }
+    best={};best_j=-math.inf;diagnostics=[]
+    for i,spec in enumerate(candidate_specifications(d,direction,list(h)+list(clean),quantiles)):
+        hs=[oriented_document_score(r,d,direction,spec) for r in h]
+        clean_auc=auroc(hs,[oriented_document_score(r,d,direction,spec) for r in clean])
+        attack_aucs={name:auroc(hs,[oriented_document_score(r,d,direction,spec) for r in values])
+          for name,values in attack_rows.items()}
+        objective=.8*float(np.mean(list(attack_aucs.values())))+.2*clean_auc
+        diagnostics.append({"candidate_index":i,"specification":spec,"objective":objective,
+          "clean_auroc":clean_auc,"attack_aurocs":attack_aucs})
+        if objective>best_j+1e-12:best_j=objective;best=dict(spec)
+    return best,diagnostics,{"fallback_to_universal":False,"fallback_reason":None,
+      "n_tuning_machine":len(bin_rows),"attack_counts":counts}
+
 def freeze_contamination_cutpoints(tuning_rows,requested=None,positive_groups=4,min_count=1):
-    positive=np.asarray([rho(r) for r in tuning_rows if not human(r) and rho(r)>0])
-    if requested is not None: cuts=[float(x) for x in requested]; provenance="configured_after_tuning_review"
-    elif len(positive):
-        effective_min=min(max(1,min_count),len(positive))
-        feasible=max(1,min(positive_groups,len(positive)//effective_min))
-        cuts=[]
-        for groups in range(feasible,0,-1):
-            trial=sorted(set(float(x) for x in np.quantile(positive,np.linspace(0,1,groups+1)[1:-1])))
-            trial_counts=Counter(contamination_bin(x,trial)[0] for x in positive)
-            if groups==1 or min(trial_counts.values(),default=0)>=effective_min:
-                cuts=trial;break
-        provenance="automatic_tuning_quantiles"
-    else: cuts=[]; provenance="no_positive_cutpoints"
-    cuts=sorted(set(cuts))
-    if any(not 0<x<1 for x in cuts):raise ValueError("rho cutpoints must be in (0,1)")
-    counts=Counter(contamination_bin(x,cuts)[0] for x in positive)
-    if counts and min(counts.values())<min(min_count,len(positive)) and requested is not None:
-        raise ValueError(f"positive contamination bin smaller than configured minimum {min_count}")
-    return cuts,provenance
+    """Return the protocol-fixed rate-oracle boundaries.
+
+    ``tuning_rows`` and the legacy sizing arguments remain in the signature so
+    older callers fail scientifically rather than silently learning new bins.
+    Bin sample sizes are handled when each rate-specific clipping rule is fit.
+    """
+    del tuning_rows, positive_groups, min_count
+    values=RATE_ADAPTIVE_CUTPOINTS if requested is None else requested
+    cuts=tuple(float(x) for x in values)
+    if cuts!=RATE_ADAPTIVE_CUTPOINTS:
+        raise ValueError(
+          f"rate-adaptive cutpoints are frozen at {list(RATE_ADAPTIVE_CUTPOINTS)}"
+        )
+    return list(cuts),"fixed_protocol"
 def contamination_bin(x,cuts):
     if x<=0:return 0,"rho=0"
     for i,u in enumerate(cuts,1):
@@ -184,7 +211,7 @@ def _rows(rows,s,h=None,c=None):
     if h is not None:z=[r for r in z if human(r)==h]
     if c is not None:z=[r for r in z if condition(r)==c]
     return z
-def _thresholds(cal,d,direction,spec):
+def _thresholds(cal,d,direction,spec,clipping_mode="universal",bin_index=None,bin_label=None):
     by=defaultdict(list)
     for r in cal:by[domain(r)].append(r)
     out={}; summary=[]
@@ -193,7 +220,9 @@ def _thresholds(cal,d,direction,spec):
         b=[oriented_document_score(r,d,direction,spec) for r in rs]
         ta=calibration_threshold(a,TARGET_FPR);tb=calibration_threshold(b,TARGET_FPR)
         out[dom]={"raw":ta,"clipped":tb}
-        summary.append({"detector":d,"domain":dom,"target_fpr":TARGET_FPR,"n_calibration_human":len(rs),
+        summary.append({"detector":d,"domain":dom,"clipping_mode":clipping_mode,
+          "contamination_bin_index":bin_index,"contamination_bin":bin_label,
+          "target_fpr":TARGET_FPR,"n_calibration_human":len(rs),
           "raw_threshold":ta,"raw_calibration_fpr":actual_fpr(a,ta),
           "clipped_threshold":tb,"clipped_calibration_fpr":actual_fpr(b,tb)})
     return out,summary
@@ -255,6 +284,18 @@ def _bootstrap(h,m,a,b,thresholds,reps,seed):
     return {k:percentile_interval(v) for k,v in vals.items()}
 def _add_ci(row,ci):
     for k,(lo,hi) in ci.items():row[k+"_ci_low"]=lo;row[k+"_ci_high"]=hi
+
+def _add_rate_adaptive_pair(row,point,ci):
+    """Add the clipped side of a raw/rate-specific paired comparison."""
+    for key,value in point.items():
+        if key.startswith("clipped_"):
+            row["rate_adaptive_"+key]=value
+        elif key.startswith("paired_"):
+            row["rate_adaptive_"+key]=value
+    for key,(lo,hi) in ci.items():
+        if key.startswith("clipped_") or key.startswith("paired_"):
+            name="rate_adaptive_"+key
+            row[name+"_ci_low"]=lo;row[name+"_ci_high"]=hi
 def _validate(rows,expected=None):
     if not rows:raise ValueError("no RAID score rows")
     ss=defaultdict(set)
@@ -284,20 +325,24 @@ def _validate(rows,expected=None):
 def _tidy(analysis,wide):
     out=[]
     for r in wide:
-        for agg in ("raw","clipped"):
-            z={k:v for k,v in r.items() if not k.startswith(("raw_","clipped_","paired_"))}
+        aggregations=[("raw","raw","paired"),("clipped","clipped","paired")]
+        if "rate_adaptive_clipped_tpr" in r:
+            aggregations.append(("rate_adaptive_clipped","rate_adaptive_clipped","rate_adaptive_paired"))
+        for agg,prefix,pair_prefix in aggregations:
+            z={k:v for k,v in r.items() if not k.startswith(("raw_","clipped_","paired_","rate_adaptive_"))}
             z.update({"analysis":analysis,"aggregation":agg,"target_fpr":TARGET_FPR,
-              "tpr":r[agg+"_tpr"],"tpr_ci_low":r.get(agg+"_tpr_ci_low"),"tpr_ci_high":r.get(agg+"_tpr_ci_high"),
-              "auroc":r[agg+"_auroc"],"auroc_ci_low":r.get(agg+"_auroc_ci_low"),"auroc_ci_high":r.get(agg+"_auroc_ci_high"),
-              "held_out_fpr":r[agg+"_test_fpr"],"held_out_fpr_ci_low":r.get(agg+"_test_fpr_ci_low"),
-              "held_out_fpr_ci_high":r.get(agg+"_test_fpr_ci_high"),"paired_tpr_difference":r["paired_tpr_difference"],
-              "paired_tpr_difference_ci_low":r.get("paired_tpr_difference_ci_low"),
-              "paired_tpr_difference_ci_high":r.get("paired_tpr_difference_ci_high")})
+              "tpr":r[prefix+"_tpr"],"tpr_ci_low":r.get(prefix+"_tpr_ci_low"),"tpr_ci_high":r.get(prefix+"_tpr_ci_high"),
+              "auroc":r[prefix+"_auroc"],"auroc_ci_low":r.get(prefix+"_auroc_ci_low"),"auroc_ci_high":r.get(prefix+"_auroc_ci_high"),
+              "held_out_fpr":r[prefix+"_test_fpr"],"held_out_fpr_ci_low":r.get(prefix+"_test_fpr_ci_low"),
+              "held_out_fpr_ci_high":r.get(prefix+"_test_fpr_ci_high"),
+              "paired_tpr_difference":r[pair_prefix+"_tpr_difference"],
+              "paired_tpr_difference_ci_low":r.get(pair_prefix+"_tpr_difference_ci_low"),
+              "paired_tpr_difference_ci_high":r.get(pair_prefix+"_tpr_difference_ci_high")})
             out.append(z)
     return out
 
 def evaluate_raid(falcon_rows,config=None,binoculars_rows=None,published_binoculars=None):
-    """Fit one universal spec per detector and evaluate at 5% FPR only."""
+    """Evaluate raw, universal clipped, and fixed-rate-oracle clipped scores."""
     cfg=dict(config or {}); cfg={**cfg,**cfg.get("evaluation",{})}
     if float(cfg.get("target_fpr",TARGET_FPR))!=TARGET_FPR:raise ValueError("only 5% FPR is allowed")
     if tuple(cfg.get("clipping_quantiles",QUANTILE_GRID))!=QUANTILE_GRID:raise ValueError("quantile grid is frozen")
@@ -326,22 +371,26 @@ def evaluate_raid(falcon_rows,config=None,binoculars_rows=None,published_binocul
       for r in rows if not human(r)]
     tune=_rows(rows,"clipping_tuning"); th=_rows(rows,"clipping_tuning",True);tc=_rows(rows,"clipping_tuning",False,"none")
     cal=_rows(rows,"calibration",True);testh=_rows(rows,"test",True);testm=_rows(rows,"test",False)
-    cuts,provenance=freeze_contamination_cutpoints(
-      tune,cfg.get("contamination_cutpoints"),
-      int(cfg.get("contamination_max_positive_bins",cfg.get("contamination_positive_groups",4))),
-      int(cfg.get("contamination_min_bin_count",1)))
+    requested_cuts=cfg.get("rate_adaptive_cutpoints",cfg.get("contamination_cutpoints"))
+    cuts,provenance=freeze_contamination_cutpoints(tune,requested_cuts)
+    min_rate_rows=int(cfg.get("rate_adaptive_min_tuning_rows",250))
+    if min_rate_rows<1:raise ValueError("rate_adaptive_min_tuning_rows must be positive")
     ta={x:_rows(rows,"clipping_tuning",False,x) for x in attacks}
-    frozen={"protocol":"raid_universal_clipping_v1","target_fpr":TARGET_FPR,"quantile_grid":list(QUANTILE_GRID),
+    frozen={"protocol":"raid_universal_plus_fixed_rate_oracle_v2","target_fpr":TARGET_FPR,"quantile_grid":list(QUANTILE_GRID),
       "contamination_cutpoints":cuts,"contamination_cutpoint_provenance":provenance,
-      "rate_adaptive_clipping":False,"attack_specific_clipping":False,"detectors":{}}
+      "rate_adaptive_eligible_interval":"0<rho<=0.5",
+      "rate_adaptive_excluded_intervals":["rho=0","rho>0.5"],
+      "rate_adaptive_min_tuning_rows":min_rate_rows,
+      "rate_adaptive_clipping":True,"attack_specific_clipping":False,"detectors":{}}
     attack_summary=[];contamination_summary=[];calibration_summary=[]
+    fallback_specs=0
     for d in DETECTORS:
         direction=learn_direction(d,th,tc);spec,diagnostics=select_universal_specification(d,direction,th,tc,ta)
-        thresholds,cs=_thresholds(cal,d,direction,spec);calibration_summary+=cs
+        thresholds,cs=_thresholds(cal,d,direction,spec,"universal");calibration_summary+=cs
         selected=next(x for x in diagnostics if x["specification"]==spec)
         frozen["detectors"][d]={"direction":direction,"clipping_specification":spec,
           "selection_objective":selected["objective"],"candidate_diagnostics":diagnostics,
-          "classification_thresholds":thresholds}
+          "classification_thresholds":thresholds,"rate_adaptive_bins":{}}
         a,b=_cache(testh+testm,d,direction,spec)
         for record in cs:
             domain_humans=[r for r in testh if domain(r)==record["domain"]]
@@ -356,19 +405,61 @@ def evaluate_raid(falcon_rows,config=None,binoculars_rows=None,published_binocul
                "n_test_machine":len(mr),"n_test_sources":len({source(r) for r in mr}),
                "clipping_specification":json.dumps(spec,sort_keys=True),**_point(testh,mr,a,b,thresholds)}
             _add_ci(z,_bootstrap(testh,mr,a,b,thresholds,reps,_seed(bseed,d,"attack",cond)));attack_summary.append(z)
-        bins=defaultdict(list)
-        for r in testm:bins[contamination_bin(rho(r),cuts)].append(r)
-        for (i,label),mr in sorted(bins.items()):
+        tuning_bins=defaultdict(list);test_bins=defaultdict(list)
+        for r in tune:
+            if not human(r) and condition(r)!="none":
+                key=contamination_bin(rho(r),cuts)
+                if key[0] in RATE_ADAPTIVE_BIN_INDICES:tuning_bins[key].append(r)
+        for r in testm:
+            key=contamination_bin(rho(r),cuts)
+            if key[0] in RATE_ADAPTIVE_BIN_INDICES:test_bins[key].append(r)
+        for i in RATE_ADAPTIVE_BIN_INDICES:
+            lo=0.0 if i==1 else cuts[i-2];upper=cuts[i-1]
+            label=f"({lo:.6g},{upper:.6g}]"
+            tuning_machine=tuning_bins.get((i,label),[])
+            mr=test_bins.get((i,label),[])
+            if not mr:raise ValueError(f"fixed contamination bin {label} has no test rows")
+            adaptive_spec,adaptive_diagnostics,adaptive_meta=select_rate_adaptive_specification(
+              d,direction,th,tc,tuning_machine,spec,min_rate_rows)
+            if adaptive_meta["fallback_to_universal"]:fallback_specs+=1
+            adaptive_thresholds,adaptive_calibration=_thresholds(
+              cal,d,direction,adaptive_spec,"rate_adaptive",i,label)
+            calibration_summary+=adaptive_calibration
+            adaptive_selected=(next((x for x in adaptive_diagnostics
+              if x["specification"]==adaptive_spec),None))
+            frozen["detectors"][d]["rate_adaptive_bins"][str(i)]={
+              "contamination_bin":label,"lower_exclusive":lo,"upper_inclusive":upper,
+              "clipping_specification":adaptive_spec,
+              "selection_objective":None if adaptive_selected is None else adaptive_selected["objective"],
+              "candidate_diagnostics":adaptive_diagnostics,
+              "classification_thresholds":adaptive_thresholds,**adaptive_meta}
+            adaptive_raw,adaptive_clipped=_cache(testh+mr,d,direction,adaptive_spec)
+            for record in adaptive_calibration:
+                domain_humans=[r for r in testh if domain(r)==record["domain"]]
+                record["n_test_human"]=len(domain_humans)
+                record["raw_test_fpr"]=actual_fpr(
+                  [adaptive_raw[id(r)] for r in domain_humans],record["raw_threshold"])
+                record["clipped_test_fpr"]=actual_fpr(
+                  [adaptive_clipped[id(r)] for r in domain_humans],record["clipped_threshold"])
             rates=np.asarray([rho(r) for r in mr])
             z={"detector":d,"contamination_bin_index":i,"contamination_bin":label,"target_fpr":TARGET_FPR,
               "n_test_human":len(testh),"n_test_machine":len(mr),"n_test_sources":len({source(r) for r in mr}),
+              "n_tuning_machine":len(tuning_machine),
               "rho_median":float(np.median(rates)),"rho_q1":float(np.quantile(rates,.25)),"rho_q3":float(np.quantile(rates,.75)),
               "attack_composition":json.dumps(Counter(condition(r) for r in mr),sort_keys=True),
               "generator_composition":json.dumps(Counter(str(_first(r,("generator","model"),"unknown")) for r in mr),sort_keys=True),
               "decoding_composition":json.dumps(Counter(str(_first(r,("decoding_method","decoding"),"unknown")) for r in mr),sort_keys=True),
               "repetition_penalty_composition":json.dumps(Counter(str(_first(r,("repetition_penalty",),"unknown")) for r in mr),sort_keys=True),
-              "clipping_specification":json.dumps(spec,sort_keys=True),**_point(testh,mr,a,b,thresholds)}
-            _add_ci(z,_bootstrap(testh,mr,a,b,thresholds,reps,_seed(bseed,d,"rho",i)));contamination_summary.append(z)
+              "clipping_specification":json.dumps(spec,sort_keys=True),
+              "rate_adaptive_clipping_specification":json.dumps(adaptive_spec,sort_keys=True),
+              "rate_adaptive_fallback_to_universal":adaptive_meta["fallback_to_universal"],
+              **_point(testh,mr,a,b,thresholds)}
+            _add_ci(z,_bootstrap(testh,mr,a,b,thresholds,reps,_seed(bseed,d,"rho",i)))
+            adaptive_point=_point(testh,mr,adaptive_raw,adaptive_clipped,adaptive_thresholds)
+            adaptive_ci=_bootstrap(testh,mr,adaptive_raw,adaptive_clipped,adaptive_thresholds,
+              reps,_seed(bseed,d,"rho_adaptive",i))
+            _add_rate_adaptive_pair(z,adaptive_point,adaptive_ci)
+            contamination_summary.append(z)
     configured_published=cfg.get("published_binoculars_tpr",{})
     pub=dict(PUBLISHED_BINOCULARS_TPR)
     pub.update({condition({"label":"llm","attack":k}):float(v) for k,v in configured_published.items()})
@@ -382,7 +473,8 @@ def evaluate_raid(falcon_rows,config=None,binoculars_rows=None,published_binocul
     counts.update({"attack_summary_rows":len(attack_summary),"contamination_summary_rows":len(contamination_summary),
       "metrics_rows":len(metrics),"calibration_rows":len(calibration_summary),"binoculars_sanity_rows":len(sanity),
       "bootstrap_repetitions":reps,"contamination_cutpoints":cuts,"universal_specs":7,
-      "rate_adaptive_specs":0,"attack_specific_specs":0,
+      "rate_adaptive_specs":len(DETECTORS)*len(RATE_ADAPTIVE_BIN_INDICES),
+      "rate_adaptive_fallback_specs":fallback_specs,"attack_specific_specs":0,
       "contamination_record_rows":len(contamination_records)})
     return RaidEvaluationResult(frozen,metrics,attack_summary,contamination_summary,cuts,sanity,calibration_summary,contamination_records,counts)
 

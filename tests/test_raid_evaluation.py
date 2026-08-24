@@ -8,6 +8,7 @@ import numpy as np
 from RAID.raid_evaluation import (
     DETECTORS,
     QUANTILE_GRID,
+    RATE_ADAPTIVE_CUTPOINTS,
     candidate_specifications,
     attach_contamination_rates,
     evaluate_raid,
@@ -57,12 +58,16 @@ def protocol_rows():
     for split, indices in (("clipping_tuning",range(0,4)),("calibration",range(4,8)),("test",range(8,12))):
         for i in indices:
             sid=f"s-{i}"
-            rows.append(row(sid,split,"human",token_ids=(90,91,92)))
-            rows.append(row(sid,split,"machine"))
+            base_ids=tuple(range(100))
+            rows.append(row(sid,split,"human",token_ids=tuple(range(100,200))))
+            rows.append(row(sid,split,"machine",token_ids=base_ids))
+            changed_counts=(4,4,8,8,15,15,30,30,4,8,70)
             for j,attack in enumerate(ATTACKS):
-                # One substitution, with additional insertions at increasing
-                # realized rates. Every variant remains linked to one source.
-                ids=[1,20+j,3]+([30+j]*(j//4))
+                # Populate all four fixed oracle bins.  The final attack is
+                # deliberately above .50 and must be excluded from that
+                # analysis while remaining in universal attack evaluation.
+                changed=changed_counts[j]
+                ids=[1000+j]*changed+list(base_ids[changed:])
                 rows.append(row(sid,split,"machine",attack,shift=-j*.015,token_ids=ids))
     return rows
 
@@ -118,21 +123,28 @@ class RaidEvaluationTests(unittest.TestCase):
 
     def test_full_protocol_is_deterministic_and_writes_all_artifacts(self):
         cfg={"bootstrap_repetitions":5,"bootstrap_seed":71,
-             "contamination_cutpoints":[.26,.51,.76],"expected_attacks":ATTACKS}
+             "rate_adaptive_cutpoints":list(RATE_ADAPTIVE_CUTPOINTS),
+             "rate_adaptive_min_tuning_rows":1,"expected_attacks":ATTACKS}
         first=evaluate_raid(protocol_rows(),cfg)
         second=evaluate_raid(protocol_rows(),cfg)
         self.assertEqual(first.metrics,second.metrics)
         self.assertEqual(set(first.frozen_specs["detectors"]),set(DETECTORS))
-        self.assertFalse(first.frozen_specs["rate_adaptive_clipping"])
-        self.assertEqual(first.validation_counts["rate_adaptive_specs"],0)
+        self.assertTrue(first.frozen_specs["rate_adaptive_clipping"])
+        self.assertEqual(first.validation_counts["rate_adaptive_specs"],28)
         self.assertEqual(first.validation_counts["attack_specific_specs"],0)
         self.assertEqual(len(first.attack_summary),7*12)
         self.assertEqual({r["target_fpr"] for r in first.metrics},{.05})
-        self.assertEqual({r["aggregation"] for r in first.metrics},{"raw","clipped"})
+        self.assertEqual({r["aggregation"] for r in first.metrics},{"raw","clipped","rate_adaptive_clipped"})
         self.assertTrue(all("paired_tpr_difference_ci_low" in r for r in first.attack_summary))
         self.assertEqual(len(first.binoculars_sanity),7)
-        self.assertEqual(first.contamination_cutpoints,[.26,.51,.76])
-        # Every detector has exactly one spec, shared by every attack and bin.
+        self.assertEqual(first.contamination_cutpoints,list(RATE_ADAPTIVE_CUTPOINTS))
+        self.assertEqual(len(first.contamination_summary),7*4)
+        self.assertEqual(
+            {r["contamination_bin_index"] for r in first.contamination_summary},
+            {1,2,3,4},
+        )
+        self.assertTrue(all("rate_adaptive_clipped_tpr" in r for r in first.contamination_summary))
+        # Every detector retains exactly one universal specification.
         for detector in DETECTORS:
             specs={r["clipping_specification"] for r in first.attack_summary if r["detector"]==detector}
             specs|={r["clipping_specification"] for r in first.contamination_summary if r["detector"]==detector}
@@ -152,6 +164,8 @@ class RaidEvaluationTests(unittest.TestCase):
             evaluate_raid(rows,{"bootstrap_repetitions":0,"expected_attacks":ATTACKS})
         with self.assertRaisesRegex(ValueError,"5%"):
             evaluate_raid(protocol_rows(),{"target_fpr":.01})
+        with self.assertRaisesRegex(ValueError,"frozen"):
+            evaluate_raid(protocol_rows(),{"rate_adaptive_cutpoints":[.1,.2,.3,.4]})
 
 if __name__=="__main__":
     unittest.main()

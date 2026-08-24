@@ -115,7 +115,8 @@ The dependency graph reports success only when
 `results/raid/$RAID_RUN_ID/validation_report.json` contains
 `validation_status: pass`. A smoke has 64
 sources, 832 prepared rows, four complete shards per scorer, seven detector
-specifications, only 5% FPR, and 100 bootstrap repetitions. It remains
+universal specifications plus 28 fixed-bin rate-oracle specifications, only
+5% FPR, and 100 bootstrap repetitions. It remains
 `debug_only` and is not a scientific result.
 
 ## 3. Full run
@@ -130,7 +131,7 @@ unset LIMIT_SOURCES BOOTSTRAP_REPETITIONS DEBUG_ONLY REUSE_INDEX_PATH
 export NUM_SHARDS=4
 export RAID_DATA_PATH=/work/hdd/bhuc/$USER/raid/train.csv
 export INDEX_CACHE_DIR=/work/hdd/bhuc/$USER/raid/index-cache
-export RAID_RUN_ID="raid-universal-clipping-full-$(date -u +%Y%m%dT%H%M%SZ)"
+export RAID_RUN_ID="raid-fixed-rate-oracle-full-$(date -u +%Y%m%dT%H%M%SZ)"
 
 bash RAID/submit_raid.sh
 ```
@@ -148,7 +149,8 @@ Scientific completion requires all of the following:
 - merged Falcon and Binoculars keys exactly equal prepared keys;
 - model provenance is identical across each scorer's shards;
 - manifest reports all five logical stages complete;
-- all seven raw and universal-clipped detectors are present;
+- all seven raw and universal-clipped detectors are present, together with the
+  four fixed-bin rate-oracle configurations per detector;
 - only the 5% FPR target is present;
 - 2,000 bootstrap repetitions use paired source-cluster resampling;
 - contamination and truncation audits are complete;

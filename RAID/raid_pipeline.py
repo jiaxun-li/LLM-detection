@@ -29,7 +29,12 @@ from RAID.raid_data import (
     prepare_raid_data,
     raid_row_key,
 )
-from RAID.raid_evaluation import evaluate_raid, write_evaluation_artifacts
+from RAID.raid_evaluation import (
+    RATE_ADAPTIVE_BIN_INDICES,
+    RATE_ADAPTIVE_CUTPOINTS,
+    evaluate_raid,
+    write_evaluation_artifacts,
+)
 from RAID.raid_scoring import (
     RAIDBinocularsScorer,
     RAIDFalconScorer,
@@ -110,6 +115,12 @@ def load_raid_config(path: str | Path) -> dict[str, Any]:
         float(evaluation.get("clean_weight", -1)) - 0.2
     ) > 1e-12:
         raise ValueError("RAID clipping objective must use 0.8 attack and 0.2 clean weight")
+    if tuple(float(value) for value in evaluation.get("rate_adaptive_cutpoints", ())) != RATE_ADAPTIVE_CUTPOINTS:
+        raise ValueError(
+            "RAID rate-adaptive bins must be (0,.05], (.05,.10], (.10,.20], and (.20,.50]"
+        )
+    if int(evaluation.get("rate_adaptive_min_tuning_rows", 0)) < 1:
+        raise ValueError("RAID rate-adaptive minimum tuning count must be positive")
     return config
 
 
@@ -1115,8 +1126,10 @@ def validate_artifacts(
         raise ValueError("RAID evaluation must contain only the 5% FPR target")
     if int(evaluation_counts.get("universal_specs", -1)) != 7 or int(
         evaluation_counts.get("rate_adaptive_specs", -1)
-    ) != 0 or int(evaluation_counts.get("attack_specific_specs", -1)) != 0:
-        raise ValueError("RAID evaluation did not use one universal spec per detector")
+    ) != 7 * len(RATE_ADAPTIVE_BIN_INDICES) or int(
+        evaluation_counts.get("attack_specific_specs", -1)
+    ) != 0:
+        raise ValueError("RAID evaluation has the wrong universal/rate-adaptive specification counts")
     contamination_records = _csv_rows(results_dir / "contamination_records.csv")
     expected_machine_rows = prepared["sources"] * len(RAID_ATTACKS)
     if len(contamination_records) != expected_machine_rows:
@@ -1161,11 +1174,46 @@ def validate_artifacts(
     ):
         raise ValueError("RAID attack summary lacks bootstrap confidence intervals")
 
+    contamination_rows = _csv_rows(results_dir / "contamination_summary.csv")
+    if len(contamination_rows) != 7 * len(RATE_ADAPTIVE_BIN_INDICES):
+        raise ValueError("RAID contamination summary must contain seven detectors and four fixed bins")
+    if {row["detector"] for row in contamination_rows} != set(EXPECTED_DETECTORS):
+        raise ValueError("RAID contamination summary is missing detectors")
+    if {int(row["contamination_bin_index"]) for row in contamination_rows} != set(
+        RATE_ADAPTIVE_BIN_INDICES
+    ):
+        raise ValueError("RAID contamination summary contains an excluded rate interval")
+    adaptive_ci_columns = {
+        "rate_adaptive_clipped_tpr_ci_low",
+        "rate_adaptive_clipped_tpr_ci_high",
+        "rate_adaptive_paired_tpr_difference_ci_low",
+        "rate_adaptive_paired_tpr_difference_ci_high",
+    }
+    if repetitions > 0 and any(
+        not adaptive_ci_columns.issubset(row)
+        or any(row[name] == "" for name in adaptive_ci_columns)
+        for row in contamination_rows
+    ):
+        raise ValueError("RAID rate-adaptive summary lacks bootstrap confidence intervals")
+
     metrics = _csv_rows(results_dir / "metrics.csv")
     if {row["detector"] for row in metrics} != set(EXPECTED_DETECTORS):
         raise ValueError("RAID metrics are missing detectors")
-    if {row["aggregation"] for row in metrics} != {"raw", "clipped"}:
-        raise ValueError("RAID metrics must contain paired raw and clipped rows")
+    attack_metrics = [row for row in metrics if row["analysis"] == "attack"]
+    contamination_metrics = [
+        row for row in metrics if row["analysis"] == "contamination_rate"
+    ]
+    if {row["aggregation"] for row in attack_metrics} != {"raw", "clipped"}:
+        raise ValueError("RAID attack metrics must contain paired raw and universal-clipped rows")
+    if {row["aggregation"] for row in contamination_metrics} != {
+        "raw",
+        "clipped",
+        "rate_adaptive_clipped",
+    }:
+        raise ValueError("RAID contamination metrics are missing the fixed-rate oracle")
+    expected_metrics = 7 * len(RAID_ATTACKS) * 2 + 7 * len(RATE_ADAPTIVE_BIN_INDICES) * 3
+    if len(metrics) != expected_metrics:
+        raise ValueError("RAID metrics have the wrong number of attack/rate rows")
     if {float(row["target_fpr"]) for row in metrics} != {0.05}:
         raise ValueError("RAID metrics contain a non-5% FPR row")
     sanity = _csv_rows(results_dir / "binoculars_sanity.csv")
@@ -1176,12 +1224,19 @@ def validate_artifacts(
     frozen = json.loads(
         (results_dir / "frozen_specs.json").read_text(encoding="utf-8")
     )
-    if frozen.get("rate_adaptive_clipping") is not False or frozen.get(
+    if frozen.get("rate_adaptive_clipping") is not True or frozen.get(
         "attack_specific_clipping"
     ) is not False:
-        raise ValueError("RAID frozen specs unexpectedly contain adaptive clipping")
+        raise ValueError("RAID frozen specs do not contain the fixed-rate oracle")
+    if tuple(frozen.get("contamination_cutpoints", ())) != RATE_ADAPTIVE_CUTPOINTS:
+        raise ValueError("RAID frozen specs contain the wrong rate boundaries")
     if set(frozen.get("detectors", {})) != set(EXPECTED_DETECTORS):
         raise ValueError("RAID frozen specs are missing detectors")
+    if any(
+        set(spec.get("rate_adaptive_bins", {})) != {"1", "2", "3", "4"}
+        for spec in frozen["detectors"].values()
+    ):
+        raise ValueError("RAID frozen specs are missing a fixed rate bin")
 
     report = {
         "validation_status": "pass",
@@ -1194,9 +1249,14 @@ def validate_artifacts(
         "bootstrap_repetitions": repetitions,
         "metrics_rows": len(metrics),
         "attack_summary_rows": len(attack_rows),
+        "contamination_summary_rows": len(contamination_rows),
         "contamination_record_rows": len(contamination_records),
         "binoculars_sanity_rows": len(sanity),
         "contamination_cutpoints": frozen.get("contamination_cutpoints", []),
+        "rate_adaptive_specs": evaluation_counts.get("rate_adaptive_specs"),
+        "rate_adaptive_fallback_specs": evaluation_counts.get(
+            "rate_adaptive_fallback_specs"
+        ),
     }
     atomic_write_json(results_dir / "validation_report.json", report)
     return report

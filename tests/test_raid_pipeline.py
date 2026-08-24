@@ -47,9 +47,12 @@ def _packs() -> tuple[list[dict], list[dict], list[dict]]:
             for attack_index, (label, attack) in enumerate(conditions):
                 is_machine = label == "llm"
                 base_id = None if label == "human" else f"generation-{index}"
-                text_ids = [90, 91, 92] if label == "human" else [1, 2, 3]
+                base_ids = list(range(100))
+                text_ids = list(range(100, 200)) if label == "human" else base_ids
                 if is_machine and attack != "none":
-                    text_ids = [1, 20 + attack_index, 3, *([40] * (attack_index // 4))]
+                    changed_counts = (4, 4, 8, 8, 15, 15, 30, 30, 4, 8, 70)
+                    changed = changed_counts[attack_index - 2]
+                    text_ids = [1000 + attack_index] * changed + base_ids[changed:]
                 row = {
                     "row_id": f"{source_id}:{label}:{attack}",
                     "dataset": "raid",
@@ -253,6 +256,7 @@ class RaidPipelineTests(unittest.TestCase):
                 skip_binoculars=False,
             )
             self.assertEqual(evaluation["evaluation_summary"]["universal_specs"], 7)
+            self.assertEqual(evaluation["evaluation_summary"]["rate_adaptive_specs"], 28)
             try:
                 import matplotlib  # noqa: F401
             except ImportError:

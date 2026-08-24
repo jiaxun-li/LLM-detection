@@ -8,9 +8,14 @@ realistic-edit benchmark. RAID is used to test whether the same one-sided
 token-level clipping intervention remains useful under naturally heterogeneous,
 attack-generated contamination.
 
-The study records realized contamination rate for interpretation, but it fits
-only one universal clipping specification per detector. There is no
-contamination-rate-adaptive clipping and no attack-specific clipping.
+The primary method fits one universal clipping specification per detector. A
+secondary rate-oracle analysis fits one additional detector-specific
+specification in each of four fixed realized-contamination intervals:
+\(0<\rho\leq0.05\), \(0.05<\rho\leq0.10\),
+\(0.10<\rho\leq0.20\), and \(0.20<\rho\leq0.50\). Rows with
+\(\rho=0\) or \(\rho>0.50\) remain in the dataset and universal attack
+analysis but are excluded from rate-oracle fitting and reporting. There is no
+attack-specific clipping.
 
 The detector transformations are defined in [`../clipping_method.md`](../clipping_method.md).
 For additive detectors and Binoculars, one specification is a single oriented
@@ -24,8 +29,8 @@ detectors because their local evidence and scales differ.
    pattern as the published RAID benchmark at 5% FPR?
 2. Does one universally fitted clipping specification improve TPR at 5% FPR
    for the seven detector methods under RAID attacks?
-3. How does the paired clipped-minus-raw effect vary with realized token-level
-   contamination rate?
+3. How do universal and rate-oracle clipping compare within four fixed,
+   practically interpretable realized-contamination intervals?
 4. Does clipping preserve useful detection on the unattacked machine condition?
 
 The primary outcome is TPR at a target FPR of 5%. AUROC is used for clipping
@@ -99,8 +104,8 @@ domain-stratified random assignment:
 
 | Split | Fraction | Approximate sources | Purpose |
 |---|---:|---:|---|
-| `clipping_tuning` | 40% | 5,988 | Fit orientation and one clipping specification per detector |
-| `calibration` | 20% | 2,994 | Fit per-domain raw and clipped thresholds at 5% FPR |
+| `clipping_tuning` | 40% | 5,988 | Fit orientation, universal clipping, and four rate-oracle specifications per detector |
+| `calibration` | 20% | 2,994 | Fit per-domain thresholds for every raw or clipped configuration at 5% FPR |
 | `test` | 40% | 5,989 | Final attack- and contamination-rate evaluation |
 
 Every selected clean/attacked machine family stays with its human source in one
@@ -139,21 +144,25 @@ For every machine row, store:
   attack operations and is not treated as document contamination rate;
 - whether truncation hid any full-text edits from the scored window.
 
-Contamination rate is descriptive. It never changes the fitted clipping
-specification.
+Contamination rate is descriptive for the universal analysis and selects a
+fixed-bin clipping specification only in the explicitly labeled rate-oracle
+analysis.
 
-## Descriptive contamination-rate groups
+## Fixed contamination-rate groups
 
-Use only the `clipping_tuning` contamination-rate distribution to choose a
-small set of interpretable reporting intervals. Give \(\rho=0\) its own group,
-ensure every positive-rate interval has adequate tuning and anticipated test
-counts, and freeze the cutpoints before calibration or test results are read.
+The rate-oracle intervals are fixed a priori at
+\(0<\rho\leq0.05\), \(0.05<\rho\leq0.10\),
+\(0.10<\rho\leq0.20\), and \(0.20<\rho\leq0.50\). They are not
+estimated from tuning quantiles. Rows with \(\rho=0\) and \(\rho>0.50\) are
+excluded only from this analysis. For every interval report its tuning and
+test counts, median and interquartile range of \(\rho\), attack composition,
+and selected generator/decoding composition.
 
-The cutpoints are saved in the run manifest. For every final interval report
-its sample count, median and interquartile range of \(\rho\), attack
-composition, and selected generator/decoding composition. These intervals are
-used only for tables and plots; the same universal clipped detector is applied
-in every interval.
+Fit one clipping specification per detector and fixed interval. Attacks
+represented within an interval receive equal weight in the same 0.8 attack / 0.2
+clean objective used by universal clipping. If an interval has fewer than 250
+tuning machine rows, use the already-frozen universal specification and record
+the fallback; never move the fixed boundaries.
 
 ## Scoring context and models
 
@@ -241,9 +250,10 @@ $$
 Every attack receives equal weight. The clean-machine component prevents a
 candidate from being selected solely by sacrificing unattacked detection.
 Ties within numerical tolerance retain the earlier candidate, and candidate
-order begins with no clipping. The fitted orientation and one detector-specific
-clipping specification are frozen for every domain, attack, contamination
-rate, calibration row, and test row.
+order begins with no clipping. The fitted orientation and universal
+detector-specific specification are frozen for every domain and attack. The
+four rate-oracle specifications are separately frozen and used only for test
+rows in their corresponding fixed intervals.
 
 Detector-specific clipping follows `clipping_method.md` exactly:
 
@@ -257,15 +267,16 @@ Official raw Binoculars is never replaced by its clipped extension.
 
 ## Calibration at 5% FPR
 
-For every detector and domain, derive separate raw and clipped classification
-thresholds from only the human documents in the `calibration` split. Use the
+For every detector, domain, and clipping specification, derive separate raw
+and clipped classification thresholds from only the human documents in the
+`calibration` split. Use the
 conservative empirical threshold whose achieved calibration FPR is closest to
 but does not exceed 5%, following RAID's low-FPR evaluation principle.
 
 Record the threshold, calibration-human count, achieved calibration FPR, and
 held-out test FPR. There is no 1%-FPR analysis in this benchmark.
 
-No orientation, clipping specification, contamination-rate cutpoint, or
+No orientation, clipping specification, fixed contamination-rate boundary, or
 classification threshold may use final-test outcomes.
 
 ## Final estimands and reports
@@ -293,11 +304,14 @@ For each frozen reporting interval and detector, report:
 
 - raw TPR at calibrated 5% FPR;
 - universal-clipped TPR at calibrated 5% FPR;
-- paired clipped-minus-raw TPR;
-- raw and clipped AUROC as secondary diagnostics;
+- rate-oracle-clipped TPR at its separately calibrated 5% FPR;
+- paired universal-minus-raw and rate-oracle-minus-raw TPR;
+- raw, universal-clipped, and rate-oracle-clipped AUROC as secondary diagnostics;
 - sample, source, attack, and generator/decoding counts.
 
-No rate-specific clipping bound is fitted or applied.
+Because the correct rate interval is supplied from the clean/attacked pair,
+the rate-oracle is a diagnostic upper-bound analysis, not a directly deployable
+detector. Universal clipping remains the primary method.
 
 ### Binoculars sanity check
 
@@ -316,7 +330,7 @@ test `source_id` values with replacement. A sampled source carries its selected
 unattacked generation and all eleven attacks together. Use the same sampled
 source indices for raw and clipped scores so all differences remain paired.
 
-Orientation, contamination-rate cutpoints, clipping specifications, and
+Orientation, fixed contamination-rate boundaries, clipping specifications, and
 calibration thresholds remain frozen. The bootstrap quantifies final-test
 sample uncertainty, matching the repository's primary-study convention.
 Report percentile 95% confidence intervals for raw TPR, clipped TPR,
@@ -391,13 +405,15 @@ A scientifically complete full run must satisfy all of the following:
    row, and eleven linked attack rows;
 5. expected row counts, stable unique keys, scorer revisions, and score schemas
    pass validation;
-6. all seven detectors have raw and universal-clipped results;
+6. all seven detectors have raw and universal-clipped results, plus four
+   fixed-bin rate-oracle specifications;
 7. only 5%-FPR rows are present, with separate per-domain raw and clipped
    thresholds and held-out FPR;
 8. every final metric contains source counts and 2,000-repetition paired
    bootstrap intervals;
-9. contamination summaries use cutpoints frozen from tuning rates and never
-   fit rate-specific clipping;
+9. contamination summaries contain only the four fixed intervals through
+   \(\rho=0.50\), fit no attack-specific rule, and record every sparse-bin
+   fallback to universal clipping;
 10. raw Binoculars sanity output contains the RAID-published comparator values;
 11. stderr contains no traceback, CUDA failure, silent CPU/offload surprise,
     missing attack family, or truncation/schema mismatch;

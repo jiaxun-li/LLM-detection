@@ -172,6 +172,15 @@ def _contamination_plot(results_dir: Path, plt: Any) -> Path:
             color="#d64541",
             marker="s",
         )
+        _plot_series(
+            axis,
+            x,
+            selected,
+            "rate_adaptive_clipped",
+            label="Rate-oracle clipped",
+            color="#2f855a",
+            marker="^",
+        )
         axis.axhline(0, color="black", linewidth=0.6)
         axis.set_title(title)
         axis.set_ylim(-0.02, 1.02)
@@ -187,8 +196,8 @@ def _contamination_plot(results_dir: Path, plt: Any) -> Path:
         axis.set_xlabel("Realized Falcon-token edit rate interval")
         axis.legend(fontsize=8, loc="best")
     figure.suptitle(
-        "RAID robustness by realized contamination rate\n"
-        "(one universal clipping specification in every interval)"
+        "RAID robustness in four fixed realized-contamination intervals\n"
+        "(rate zero and rates above 0.50 excluded from this analysis)"
     )
     figure.tight_layout()
     output = results_dir / "plots" / "raid_contamination_tpr.png"
@@ -212,4 +221,3 @@ def plot_raid(results_dir: str | Path) -> list[Path]:
         if not (root / name).is_file():
             raise FileNotFoundError(f"RAID plotting is missing {root / name}")
     return [_attack_plot(root, plt), _contamination_plot(root, plt)]
-

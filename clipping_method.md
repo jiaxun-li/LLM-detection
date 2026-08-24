@@ -228,12 +228,34 @@ where every AUROC contrasts that machine-origin family with independent human
 responses. This balanced objective prevents the clipping bound from being
 selected primarily for the largest edit family.
 
+## Selection in RAID
+
+RAID retains one universal specification per detector as the primary method.
+Its tuning objective assigns 80% weight to the mean AUROC across the eleven
+attacks (equally weighted) and 20% to unattacked-machine AUROC.
+
+A secondary rate-oracle uses four fixed Falcon-token edit-rate intervals:
+\(0<\rho\leq0.05\), \(0.05<\rho\leq0.10\),
+\(0.10<\rho\leq0.20\), and \(0.20<\rho\leq0.50\). Within each
+interval and detector, it selects one specification with the same 80/20
+objective, equally weighting only the attacks represented in that interval.
+Rows with \(\rho=0\) or \(\rho>0.50\) are excluded from this rate-oracle only;
+they remain in universal and attack-level analyses. A fixed interval with
+fewer than 250 tuning machine rows falls back to the universal specification.
+The boundaries are never moved to equalize sample sizes.
+
+The rate-oracle is not a deployable detector because assigning a test attack to
+an interval requires its unattacked counterpart. It is reported as a mechanism
+diagnostic and possible upper bound; universal clipping remains primary.
+
 ## Calibration and final evaluation
 
 Raw and clipped aggregation receive separate calibration thresholds. In the
 primary study, thresholds are selected from 500 clean human calibration
-documents; in Beemo, they are selected from 875 human calibration records. The
-target false-positive rates are 1% and 5%.
+documents; in Beemo, they are selected from 875 human calibration records; and
+in RAID, each universal or fixed-rate specification receives a separate
+per-domain threshold from clean calibration humans. The primary and Beemo
+target false-positive rates are 1% and 5%; RAID reports only 5%.
 
 No clipping direction, bound, or calibration threshold is selected using final
 test outcomes. The final comparisons are paired because raw and clipped scores
@@ -249,8 +271,10 @@ Primary-study `metrics.csv` files store the frozen specification in the
 - `{"nll_upper": ..., "log_rank_upper": ...}` for LRR;
 - `{}` when no clipping is selected.
 
-Beemo stores the complete fitted specifications and tuning diagnostics in
-`frozen_specs.json`. The compact export bundle also preserves these files,
+Beemo and RAID store complete fitted specifications and tuning diagnostics in
+`frozen_specs.json`. RAID records the universal specification, all four
+rate-oracle specifications, their calibration thresholds, tuning counts, and
+any sparse-bin fallback. The compact export bundle also preserves these files,
 along with all point estimates and confidence intervals needed for tables and
 plots.
 

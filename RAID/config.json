@@ -1,5 +1,5 @@
 {
-  "protocol_name": "raid-one-family-universal-clipping-v1",
+  "protocol_name": "raid-universal-plus-fixed-rate-oracle-v2",
   "result_label": "RAID_EXTERNAL_BENCHMARK",
   "dataset": {
     "loader": "raid_bench",
@@ -76,8 +76,8 @@
     "clean_weight": 0.2,
     "bootstrap_repetitions": 2000,
     "bootstrap_seed": 260825,
-    "contamination_min_bin_count": 250,
-    "contamination_max_positive_bins": 4,
+    "rate_adaptive_cutpoints": [0.05, 0.10, 0.20, 0.50],
+    "rate_adaptive_min_tuning_rows": 250,
     "published_binoculars_tpr": {
       "none": 0.796,
       "paraphrase": 0.803,
