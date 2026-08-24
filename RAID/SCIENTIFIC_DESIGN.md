@@ -507,6 +507,53 @@ and must validate zero overlap. Until that exclusion path is implemented and
 tested, the full benchmark must not be launched. This preserves an independent
 final test while making the pilot a legitimate model-selection experiment.
 
+## Exploratory one-sided trimmed aggregation
+
+The bounded pilot also tests a single alternative to clipping: remove a fixed
+fraction of the most adverse token evidence. For each additive detector, orient
+the local evidence so larger values are more machine-like, sort it as
+(z_{(1)}\leq\cdots\leq z_{(n)}), set (k=\lfloor\alpha n\rfloor), and use
+
+$$
+S_{\mathrm{trim},\alpha}
+=
+\frac{1}{n-k}\sum_{i=k+1}^{n}z_{(i)}.
+$$
+
+The candidate grid is
+
+$$
+\alpha\in\{0,0.005,0.01,0.025,0.05,0.10,0.20\}.
+$$
+
+Binoculars applies the same trim to its oriented token-level evidence and then
+retains its official outer exponential transformation. LRR is not additive.
+Its exploratory extension therefore removes paired NLL/log-rank tokens ranked
+by the exact oriented improvement from leaving each token out, then recomputes
+the ratio on retained pairs. This is labeled
+`paired_leave_one_out_influence_trim` and is not described as an additive
+trimmed mean.
+
+Two universal fractions are learned per detector: full universal uses all 11
+attacked families at every realized rate; eligible universal uses only attacked
+rows with (0<\rho\leq0.50). Both use the original selection objective
+
+$$
+0.8\,\operatorname{mean}_{a}\operatorname{AUROC}_{a}
++0.2\,\operatorname{AUROC}_{\mathrm{clean}},
+$$
+
+with represented attacks equally weighted. Full-universal tuning requires all
+11 attacks; eligible-universal tuning omits attack families with no realized
+rows in its eligible interval. Exact ties retain the smaller fraction, so
+(\alpha=0) wins a tie. The untouched calibration humans separately calibrate
+raw and trimmed per-domain thresholds to 5% FPR, and the pilot test split is
+reported by attack and fixed contamination-rate interval. AUROC is primary;
+TPR and held-out FPR are diagnostics because the 500-source calibration split
+is small. There is no bootstrap. Outputs are labeled
+`PILOT_DEBUG_NOT_FOR_FINAL_REPORTING`, do not replace frozen clipping results,
+and record the same development source exclusions.
+
 ## Delta execution contract
 
 The Delta orchestrator is `RAID/submit_raid.sh`. It submits a CPU preparation

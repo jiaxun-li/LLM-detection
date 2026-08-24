@@ -22,6 +22,11 @@ from RAID.compare_tuning_methods import (
     compare_tuning_methods,
     write_comparison_artifacts,
 )
+from RAID.compare_trimmed_mean import (
+    compare_trimmed_mean,
+    trimmed_document_score,
+    write_trimmed_mean_artifacts,
+)
 
 ATTACKS = [
     "alternative_spelling", "article_deletion", "homoglyph", "insert_paragraphs",
@@ -264,6 +269,79 @@ class RaidEvaluationTests(unittest.TestCase):
             )
             self.assertTrue(development["must_be_excluded_from_future_full_benchmark"])
             self.assertEqual(development["source_count"], 12)
+
+    def test_trimmed_mean_removes_lowest_oriented_evidence(self):
+        record = row("s-0", "test", "machine")
+        record["token_features"]["logp"] = [-100.0, -3.0, -2.0, -1.0]
+        record["token_features"]["log_rank"] = [4.0, 3.0, 2.0, 1.0]
+        raw = oriented_document_score(record, "log_likelihood", 1)
+        self.assertEqual(
+            trimmed_document_score(record, "log_likelihood", 1, 0.0), raw
+        )
+        self.assertAlmostEqual(
+            trimmed_document_score(record, "log_likelihood", 1, 0.25), -2.0
+        )
+        self.assertTrue(
+            np.isfinite(trimmed_document_score(record, "lrr", 1, 0.25))
+        )
+
+    def test_trimmed_mean_comparison_is_isolated_and_complete(self):
+        rows = protocol_rows()
+        falcon = []
+        binoculars = []
+        for record in rows:
+            falcon.append(
+                {
+                    **record,
+                    "token_features": {
+                        name: value
+                        for name, value in record["token_features"].items()
+                        if name
+                        not in (
+                            "performer_nll",
+                            "observer_to_performer_cross_entropy",
+                        )
+                    },
+                }
+            )
+            binoculars.append(
+                {
+                    **record,
+                    "token_features": {
+                        name: value
+                        for name, value in record["token_features"].items()
+                        if name
+                        in (
+                            "performer_nll",
+                            "observer_to_performer_cross_entropy",
+                        )
+                    },
+                }
+            )
+        result = compare_trimmed_mean(
+            falcon,
+            binoculars,
+            expected_attacks=ATTACKS,
+            trim_fractions=(0.0, 0.1),
+        )
+        self.assertEqual(result["manifest"]["method_count"], 2)
+        self.assertEqual(len(result["selected_trimming"]), 7 * 2)
+        self.assertEqual(len(result["candidate_diagnostics"]), 7 * 2 * 2)
+        self.assertEqual(len(result["summary"]), 7 * 2)
+        self.assertEqual(
+            {row["scope"] for row in result["selected_trimming"]},
+            {"full_universal", "eligible_universal"},
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = write_trimmed_mean_artifacts(result, temporary)
+            self.assertEqual(len(paths), 7)
+            complete = json.loads(
+                (Path(temporary) / "comparison.complete.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(complete["status"], "complete")
+            self.assertEqual(complete["selected_trimming_rows"], 14)
 
 if __name__=="__main__":
     unittest.main()

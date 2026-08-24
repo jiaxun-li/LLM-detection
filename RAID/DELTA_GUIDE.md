@@ -205,3 +205,33 @@ sacct -j "$TUNING_JOB_ID" --format=JobID,JobName,State,Elapsed,MaxRSS,ExitCode
 tail -n 100 "logs/raid-tuning-$TUNING_JOB_ID.err"
 cat "results/raid/$RAID_RUN_ID/tuning_comparison_v1/comparison.complete.json"
 ```
+
+## 6. Evaluation-only trimmed-mean comparison
+
+This reuses the completed 500-source Falcon and Binoculars score packs. It does
+not repeat preparation, model loading, or inference:
+
+```bash
+cd ~/LLM-detection-fast-smoke
+export RAID_RUN_ID=raid-pilot-500-20260823T165957Z
+export TRIM_OUTPUT_NAME=trimmed_mean_comparison_v1
+
+TRIM_JOB_ID="$(sbatch --parsable \
+  --account=bhuc-delta-gpu \
+  RAID/delta_raid_trimmed_mean.sbatch)"
+echo "TRIM_JOB_ID=$TRIM_JOB_ID"
+```
+
+The wrapper reserves one A100 only because the available project account is a
+GPU-type account. The analysis itself is CPU-only. It writes point estimates
+under `results/raid/<run-id>/trimmed_mean_comparison_v1/` and refuses an
+unbounded run by default.
+
+Check it with:
+
+```bash
+sacct -j "$TRIM_JOB_ID" --format=JobID,JobName,State,Elapsed,MaxRSS,ExitCode
+tail -n 100 "logs/raid-trim-$TRIM_JOB_ID.err"
+cat "results/raid/$RAID_RUN_ID/$TRIM_OUTPUT_NAME/comparison.complete.json"
+column -s, -t < "results/raid/$RAID_RUN_ID/$TRIM_OUTPUT_NAME/summary.csv" | less -S
+```
