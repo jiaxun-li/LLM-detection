@@ -237,16 +237,24 @@ attacks (equally weighted) and 20% to unattacked-machine AUROC.
 A secondary rate-oracle uses four fixed Falcon-token edit-rate intervals:
 \(0<\rho\leq0.05\), \(0.05<\rho\leq0.10\),
 \(0.10<\rho\leq0.20\), and \(0.20<\rho\leq0.50\). Within each
-interval and detector, it selects one specification with the same 80/20
-objective, equally weighting only the attacks represented in that interval.
-Rows with \(\rho=0\) or \(\rho>0.50\) are excluded from this rate-oracle only;
-they remain in universal and attack-level analyses. A fixed interval with
+interval and detector, it selects the feasible candidate with the largest mean
+attacked AUROC gain over raw, equally weighting the attacks represented in that
+interval. Feasibility requires clean-machine AUROC loss relative to raw to be
+at most 0.01. Thus, clean performance is a constraint rather than a positively
+weighted objective term.
+Rows with \(\rho=0\) or \(\rho>0.50\) are excluded from rate-bin fitting and
+attacked-bin evaluation; they remain in universal and attack-level analyses.
+Unattacked rows are additionally reused for the clean-loss constraint and
+counterfactual clean-cost report. A fixed interval with
 fewer than 250 tuning machine rows falls back to the universal specification.
 The boundaries are never moved to equalize sample sizes.
 
 The rate-oracle is not a deployable detector because assigning a test attack to
 an interval requires its unattacked counterpart. It is reported as a mechanism
 diagnostic and possible upper bound; universal clipping remains primary.
+For each rate-specific bound, RAID separately reports its counterfactual effect
+on unattacked `none` rows and its effect on the aggregate and attack-specific
+test rows in the corresponding rate interval.
 
 ## Calibration and final evaluation
 

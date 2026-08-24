@@ -207,6 +207,58 @@ def _contamination_plot(results_dir: Path, plt: Any) -> Path:
     return output
 
 
+def _rate_bound_tradeoff_plot(results_dir: Path, plt: Any) -> Path:
+    rows = _read_csv(results_dir / "rate_bound_tradeoff_summary.csv")
+    figure, axes = _axes_grid(plt)
+    for axis, (detector, title) in zip(axes, DETECTOR_LABELS.items()):
+        detector_rows = [row for row in rows if row["detector"] == detector]
+        none = {
+            int(row["contamination_bin_index"]): row
+            for row in detector_rows
+            if row["comparison_condition"] == "none"
+        }
+        attacked = {
+            int(row["contamination_bin_index"]): row
+            for row in detector_rows
+            if row["comparison_condition"] == "all_attacked_in_bin"
+        }
+        indices = sorted(set(none) & set(attacked))
+        x = list(range(len(indices)))
+        for lookup, label, color, marker in (
+            (none, "Unattacked none", "#805ad5", "o"),
+            (attacked, "Attacked in interval", "#2f855a", "s"),
+        ):
+            values = [_number(lookup[index], "paired_tpr_difference") for index in indices]
+            low = [_number(lookup[index], "paired_tpr_difference_ci_low") for index in indices]
+            high = [_number(lookup[index], "paired_tpr_difference_ci_high") for index in indices]
+            axis.plot(x, values, color=color, marker=marker, linewidth=1.8, label=label)
+            if all(value == value for value in [*low, *high]):
+                axis.fill_between(x, low, high, color=color, alpha=0.14, linewidth=0)
+        axis.axhline(0, color="black", linewidth=0.8)
+        axis.set_title(title)
+        axis.grid(axis="y", alpha=0.25)
+        axis.set_xticks(x)
+        axis.set_xticklabels(
+            [attacked[index]["contamination_bin"] for index in indices],
+            rotation=35,
+            ha="right",
+            fontsize=8,
+        )
+        axis.set_ylabel("Bound-minus-raw TPR at 5% FPR")
+        axis.set_xlabel("Bound fitted for realized edit-rate interval")
+        axis.legend(fontsize=8, loc="best")
+    figure.suptitle(
+        "RAID fixed-rate bound trade-off\n"
+        "(counterfactual clean effect versus attacked-bin effect)"
+    )
+    figure.tight_layout()
+    output = results_dir / "plots" / "raid_rate_bound_tradeoff.png"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    figure.savefig(output, dpi=180, bbox_inches="tight")
+    plt.close(figure)
+    return output
+
+
 def plot_raid(results_dir: str | Path) -> list[Path]:
     """Create the two frozen RAID result figures."""
     try:
@@ -217,7 +269,16 @@ def plot_raid(results_dir: str | Path) -> list[Path]:
     except ImportError as exc:
         raise RuntimeError("RAID plotting requires matplotlib") from exc
     root = Path(results_dir)
-    for name in ("attack_summary.csv", "contamination_summary.csv", "binoculars_sanity.csv"):
+    for name in (
+        "attack_summary.csv",
+        "contamination_summary.csv",
+        "rate_bound_tradeoff_summary.csv",
+        "binoculars_sanity.csv",
+    ):
         if not (root / name).is_file():
             raise FileNotFoundError(f"RAID plotting is missing {root / name}")
-    return [_attack_plot(root, plt), _contamination_plot(root, plt)]
+    return [
+        _attack_plot(root, plt),
+        _contamination_plot(root, plt),
+        _rate_bound_tradeoff_plot(root, plt),
+    ]

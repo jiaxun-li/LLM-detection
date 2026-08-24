@@ -31,6 +31,7 @@ from RAID.raid_data import (
 )
 from RAID.raid_evaluation import (
     RATE_ADAPTIVE_BIN_INDICES,
+    RATE_ADAPTIVE_CLEAN_AUROC_LOSS_BUDGET,
     RATE_ADAPTIVE_CUTPOINTS,
     evaluate_raid,
     write_evaluation_artifacts,
@@ -121,6 +122,11 @@ def load_raid_config(path: str | Path) -> dict[str, Any]:
         )
     if int(evaluation.get("rate_adaptive_min_tuning_rows", 0)) < 1:
         raise ValueError("RAID rate-adaptive minimum tuning count must be positive")
+    if abs(
+        float(evaluation.get("rate_adaptive_clean_auroc_loss_budget", -1))
+        - RATE_ADAPTIVE_CLEAN_AUROC_LOSS_BUDGET
+    ) > 1e-12:
+        raise ValueError("RAID rate-adaptive clean AUROC loss budget must be 0.01")
     return config
 
 
@@ -1038,6 +1044,7 @@ def validate_artifacts(
         results_dir / "metrics.csv",
         results_dir / "attack_summary.csv",
         results_dir / "contamination_summary.csv",
+        results_dir / "rate_bound_tradeoff_summary.csv",
         results_dir / "binoculars_sanity.csv",
         results_dir / "calibration_summary.csv",
         results_dir / "contamination_records.csv",
@@ -1046,6 +1053,7 @@ def validate_artifacts(
         results_dir / "plot.complete.json",
         results_dir / "plots" / "raid_attack_tpr.png",
         results_dir / "plots" / "raid_contamination_tpr.png",
+        results_dir / "plots" / "raid_rate_bound_tradeoff.png",
     ]
     missing = [str(path) for path in required_files if not path.is_file()]
     if missing:
@@ -1196,6 +1204,35 @@ def validate_artifacts(
     ):
         raise ValueError("RAID rate-adaptive summary lacks bootstrap confidence intervals")
 
+    tradeoff_rows = _csv_rows(results_dir / "rate_bound_tradeoff_summary.csv")
+    required_tradeoff_cells = {
+        (detector, bin_index, comparison)
+        for detector in EXPECTED_DETECTORS
+        for bin_index in RATE_ADAPTIVE_BIN_INDICES
+        for comparison in ("none", "all_attacked_in_bin")
+    }
+    observed_tradeoff_cells = {
+        (
+            row["detector"],
+            int(row["contamination_bin_index"]),
+            row["comparison_condition"],
+        )
+        for row in tradeoff_rows
+    }
+    if not required_tradeoff_cells.issubset(observed_tradeoff_cells):
+        raise ValueError("RAID rate-bound tradeoff table lacks none/attacked comparisons")
+    if any(
+        int(row["contamination_bin_index"]) not in RATE_ADAPTIVE_BIN_INDICES
+        for row in tradeoff_rows
+    ):
+        raise ValueError("RAID rate-bound tradeoff table contains an excluded interval")
+    if repetitions > 0 and any(
+        not ci_columns.issubset(row)
+        or any(row[name] == "" for name in ci_columns)
+        for row in tradeoff_rows
+    ):
+        raise ValueError("RAID rate-bound tradeoff table lacks bootstrap intervals")
+
     metrics = _csv_rows(results_dir / "metrics.csv")
     if {row["detector"] for row in metrics} != set(EXPECTED_DETECTORS):
         raise ValueError("RAID metrics are missing detectors")
@@ -1230,6 +1267,13 @@ def validate_artifacts(
         raise ValueError("RAID frozen specs do not contain the fixed-rate oracle")
     if tuple(frozen.get("contamination_cutpoints", ())) != RATE_ADAPTIVE_CUTPOINTS:
         raise ValueError("RAID frozen specs contain the wrong rate boundaries")
+    if abs(
+        float(frozen.get("rate_adaptive_clean_auroc_loss_budget", -1))
+        - RATE_ADAPTIVE_CLEAN_AUROC_LOSS_BUDGET
+    ) > 1e-12 or frozen.get("rate_adaptive_selection_rule") != (
+        "max_attack_auroc_gain_subject_to_clean_loss"
+    ):
+        raise ValueError("RAID frozen specs contain the wrong constrained selection rule")
     if set(frozen.get("detectors", {})) != set(EXPECTED_DETECTORS):
         raise ValueError("RAID frozen specs are missing detectors")
     if any(
@@ -1237,6 +1281,14 @@ def validate_artifacts(
         for spec in frozen["detectors"].values()
     ):
         raise ValueError("RAID frozen specs are missing a fixed rate bin")
+    for detector_spec in frozen["detectors"].values():
+        for rate_spec in detector_spec["rate_adaptive_bins"].values():
+            if rate_spec.get("fallback_to_universal"):
+                continue
+            if rate_spec.get("selection_constraint_feasible") is not True or float(
+                rate_spec.get("selection_clean_auroc_loss", float("inf"))
+            ) > RATE_ADAPTIVE_CLEAN_AUROC_LOSS_BUDGET + 1e-12:
+                raise ValueError("RAID selected a rate bound that violates the clean-loss constraint")
 
     report = {
         "validation_status": "pass",
@@ -1250,6 +1302,7 @@ def validate_artifacts(
         "metrics_rows": len(metrics),
         "attack_summary_rows": len(attack_rows),
         "contamination_summary_rows": len(contamination_rows),
+        "rate_bound_tradeoff_rows": len(tradeoff_rows),
         "contamination_record_rows": len(contamination_records),
         "binoculars_sanity_rows": len(sanity),
         "contamination_cutpoints": frozen.get("contamination_cutpoints", []),

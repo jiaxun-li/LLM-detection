@@ -264,6 +264,7 @@ class RaidPipelineTests(unittest.TestCase):
                 plots.mkdir()
                 (plots / "raid_attack_tpr.png").write_bytes(b"test")
                 (plots / "raid_contamination_tpr.png").write_bytes(b"test")
+                (plots / "raid_rate_bound_tradeoff.png").write_bytes(b"test")
                 atomic_write_json(results_dir / "plot.complete.json", {"plots": []})
             else:
                 plot_stage(results_dir)

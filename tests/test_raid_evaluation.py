@@ -144,6 +144,23 @@ class RaidEvaluationTests(unittest.TestCase):
             {1,2,3,4},
         )
         self.assertTrue(all("rate_adaptive_clipped_tpr" in r for r in first.contamination_summary))
+        required_tradeoffs={
+            (detector,bin_index,comparison)
+            for detector in DETECTORS
+            for bin_index in {1,2,3,4}
+            for comparison in {"none","all_attacked_in_bin"}
+        }
+        observed_tradeoffs={
+            (r["detector"],r["contamination_bin_index"],r["comparison_condition"])
+            for r in first.rate_bound_tradeoff_summary
+        }
+        self.assertTrue(required_tradeoffs.issubset(observed_tradeoffs))
+        for detector in first.frozen_specs["detectors"].values():
+            for rate_bin in detector["rate_adaptive_bins"].values():
+                if rate_bin["fallback_to_universal"]:
+                    continue
+                self.assertTrue(rate_bin["selection_constraint_feasible"])
+                self.assertLessEqual(rate_bin["selection_clean_auroc_loss"],.01+1e-12)
         # Every detector retains exactly one universal specification.
         for detector in DETECTORS:
             specs={r["clipping_specification"] for r in first.attack_summary if r["detector"]==detector}
@@ -151,7 +168,7 @@ class RaidEvaluationTests(unittest.TestCase):
             self.assertEqual(len(specs),1)
         with tempfile.TemporaryDirectory() as tmp:
             paths=write_evaluation_artifacts(first,tmp)
-            self.assertEqual(set(paths),{"frozen_specs","metrics","attack_summary","contamination_summary","binoculars_sanity","calibration_summary","contamination_records","validation_counts"})
+            self.assertEqual(set(paths),{"frozen_specs","metrics","attack_summary","contamination_summary","rate_bound_tradeoff_summary","binoculars_sanity","calibration_summary","contamination_records","validation_counts"})
             self.assertTrue(all(p.exists() for p in paths.values()))
             frozen=json.loads(Path(paths["frozen_specs"]).read_text())
             self.assertEqual(frozen["target_fpr"],.05)

@@ -1,5 +1,5 @@
 {
-  "protocol_name": "raid-universal-plus-fixed-rate-oracle-v2",
+  "protocol_name": "raid-constrained-fixed-rate-oracle-v3",
   "result_label": "RAID_EXTERNAL_BENCHMARK",
   "dataset": {
     "loader": "raid_bench",
@@ -78,6 +78,7 @@
     "bootstrap_seed": 260825,
     "rate_adaptive_cutpoints": [0.05, 0.10, 0.20, 0.50],
     "rate_adaptive_min_tuning_rows": 250,
+    "rate_adaptive_clean_auroc_loss_budget": 0.01,
     "published_binoculars_tpr": {
       "none": 0.796,
       "paraphrase": 0.803,

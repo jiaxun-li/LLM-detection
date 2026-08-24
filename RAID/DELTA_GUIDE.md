@@ -131,7 +131,7 @@ unset LIMIT_SOURCES BOOTSTRAP_REPETITIONS DEBUG_ONLY REUSE_INDEX_PATH
 export NUM_SHARDS=4
 export RAID_DATA_PATH=/work/hdd/bhuc/$USER/raid/train.csv
 export INDEX_CACHE_DIR=/work/hdd/bhuc/$USER/raid/index-cache
-export RAID_RUN_ID="raid-fixed-rate-oracle-full-$(date -u +%Y%m%dT%H%M%SZ)"
+export RAID_RUN_ID="raid-constrained-rate-oracle-full-$(date -u +%Y%m%dT%H%M%SZ)"
 
 bash RAID/submit_raid.sh
 ```
@@ -151,6 +151,8 @@ Scientific completion requires all of the following:
 - manifest reports all five logical stages complete;
 - all seven raw and universal-clipped detectors are present, together with the
   four fixed-bin rate-oracle configurations per detector;
+- every rate-specific bound has paired `none`, attacked-bin, and represented-
+  attack trade-off rows;
 - only the 5% FPR target is present;
 - 2,000 bootstrap repetitions use paired source-cluster resampling;
 - contamination and truncation audits are complete;

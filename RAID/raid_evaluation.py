@@ -18,6 +18,7 @@ QUANTILE_GRID = (0.80, 0.85, 0.90, 0.95, 0.975, 0.99, 0.995)
 TARGET_FPR = .05
 RATE_ADAPTIVE_CUTPOINTS = (.05, .10, .20, .50)
 RATE_ADAPTIVE_BIN_INDICES = (1, 2, 3, 4)
+RATE_ADAPTIVE_CLEAN_AUROC_LOSS_BUDGET = .01
 PUBLISHED_BINOCULARS_TPR = {"none":.796,"paraphrase":.803,"synonym":.435,
     "perplexity_misspelling":.780,"homoglyph":.377,"whitespace":.701,"article_deletion":.743}
 FEATURES = {
@@ -33,6 +34,7 @@ FEATURES = {
 class RaidEvaluationResult:
     frozen_specs: dict[str,Any]; metrics:list[dict[str,Any]]
     attack_summary:list[dict[str,Any]]; contamination_summary:list[dict[str,Any]]
+    rate_bound_tradeoff_summary:list[dict[str,Any]]
     contamination_cutpoints:list[float]; binoculars_sanity:list[dict[str,Any]]
     calibration_summary:list[dict[str,Any]]; contamination_records:list[dict[str,Any]]
     validation_counts:dict[str,Any]
@@ -155,12 +157,14 @@ def select_universal_specification(d,direction,h,clean,attacks,quantiles=QUANTIL
     return best,diagnostics
 
 def select_rate_adaptive_specification(
-    d,direction,h,clean,bin_rows,universal_spec,min_tuning_rows,quantiles=QUANTILE_GRID
+    d,direction,h,clean,bin_rows,universal_spec,min_tuning_rows,
+    clean_auroc_loss_budget=RATE_ADAPTIVE_CLEAN_AUROC_LOSS_BUDGET,
+    quantiles=QUANTILE_GRID
 ):
-    """Fit one bound within a fixed contamination-rate bin.
+    """Fit one bound by attacked AUROC gain under a clean-loss constraint.
 
-    Attacks represented in the bin are equally weighted.  A sparse bin uses
-    the already-frozen universal rule; fixed rate boundaries are never moved.
+    Attacks represented in the bin are equally weighted. A sparse bin uses the
+    already-frozen universal rule; fixed rate boundaries are never moved.
     """
     attack_rows=defaultdict(list)
     for r in bin_rows:attack_rows[condition(r)].append(r)
@@ -170,19 +174,35 @@ def select_rate_adaptive_specification(
         return dict(universal_spec),[],{
           "fallback_to_universal":True,"fallback_reason":"insufficient_tuning_rows",
           "n_tuning_machine":len(bin_rows),"attack_counts":counts,
+          "selection_rule":"max_attack_auroc_gain_subject_to_clean_loss",
+          "clean_auroc_loss_budget":clean_auroc_loss_budget,
         }
-    best={};best_j=-math.inf;diagnostics=[]
-    for i,spec in enumerate(candidate_specifications(d,direction,list(h)+list(clean),quantiles)):
+    candidates=candidate_specifications(d,direction,list(h)+list(clean),quantiles)
+    raw_h=[oriented_document_score(r,d,direction,{}) for r in h]
+    raw_clean_auc=auroc(raw_h,[oriented_document_score(r,d,direction,{}) for r in clean])
+    raw_attack_aucs={name:auroc(raw_h,[oriented_document_score(r,d,direction,{}) for r in values])
+      for name,values in attack_rows.items()}
+    best={};best_gain=-math.inf;diagnostics=[]
+    for i,spec in enumerate(candidates):
         hs=[oriented_document_score(r,d,direction,spec) for r in h]
         clean_auc=auroc(hs,[oriented_document_score(r,d,direction,spec) for r in clean])
         attack_aucs={name:auroc(hs,[oriented_document_score(r,d,direction,spec) for r in values])
           for name,values in attack_rows.items()}
-        objective=.8*float(np.mean(list(attack_aucs.values())))+.2*clean_auc
-        diagnostics.append({"candidate_index":i,"specification":spec,"objective":objective,
-          "clean_auroc":clean_auc,"attack_aurocs":attack_aucs})
-        if objective>best_j+1e-12:best_j=objective;best=dict(spec)
+        gains={name:attack_aucs[name]-raw_attack_aucs[name] for name in attack_aucs}
+        mean_gain=float(np.mean(list(gains.values())))
+        clean_loss=raw_clean_auc-clean_auc
+        feasible=clean_loss<=clean_auroc_loss_budget+1e-12
+        diagnostics.append({"candidate_index":i,"specification":spec,
+          "mean_attack_auroc_gain":mean_gain,"attack_auroc_gains":gains,
+          "clean_auroc":clean_auc,"raw_clean_auroc":raw_clean_auc,
+          "clean_auroc_loss":clean_loss,"clean_auroc_loss_budget":clean_auroc_loss_budget,
+          "constraint_feasible":feasible,"attack_aurocs":attack_aucs,
+          "raw_attack_aurocs":raw_attack_aucs})
+        if feasible and mean_gain>best_gain+1e-12:best_gain=mean_gain;best=dict(spec)
     return best,diagnostics,{"fallback_to_universal":False,"fallback_reason":None,
-      "n_tuning_machine":len(bin_rows),"attack_counts":counts}
+      "n_tuning_machine":len(bin_rows),"attack_counts":counts,
+      "selection_rule":"max_attack_auroc_gain_subject_to_clean_loss",
+      "clean_auroc_loss_budget":clean_auroc_loss_budget}
 
 def freeze_contamination_cutpoints(tuning_rows,requested=None,positive_groups=4,min_count=1):
     """Return the protocol-fixed rate-oracle boundaries.
@@ -375,15 +395,22 @@ def evaluate_raid(falcon_rows,config=None,binoculars_rows=None,published_binocul
     cuts,provenance=freeze_contamination_cutpoints(tune,requested_cuts)
     min_rate_rows=int(cfg.get("rate_adaptive_min_tuning_rows",250))
     if min_rate_rows<1:raise ValueError("rate_adaptive_min_tuning_rows must be positive")
+    clean_loss_budget=float(cfg.get("rate_adaptive_clean_auroc_loss_budget",
+      RATE_ADAPTIVE_CLEAN_AUROC_LOSS_BUDGET))
+    if not math.isclose(clean_loss_budget,RATE_ADAPTIVE_CLEAN_AUROC_LOSS_BUDGET,abs_tol=1e-12):
+        raise ValueError("rate-adaptive clean AUROC loss budget is frozen at 0.01")
     ta={x:_rows(rows,"clipping_tuning",False,x) for x in attacks}
-    frozen={"protocol":"raid_universal_plus_fixed_rate_oracle_v2","target_fpr":TARGET_FPR,"quantile_grid":list(QUANTILE_GRID),
+    frozen={"protocol":"raid_constrained_fixed_rate_oracle_v3","target_fpr":TARGET_FPR,"quantile_grid":list(QUANTILE_GRID),
       "contamination_cutpoints":cuts,"contamination_cutpoint_provenance":provenance,
       "rate_adaptive_eligible_interval":"0<rho<=0.5",
       "rate_adaptive_excluded_intervals":["rho=0","rho>0.5"],
       "rate_adaptive_min_tuning_rows":min_rate_rows,
+      "rate_adaptive_clean_auroc_loss_budget":clean_loss_budget,
+      "rate_adaptive_selection_rule":"max_attack_auroc_gain_subject_to_clean_loss",
       "rate_adaptive_clipping":True,"attack_specific_clipping":False,"detectors":{}}
-    attack_summary=[];contamination_summary=[];calibration_summary=[]
+    attack_summary=[];contamination_summary=[];rate_bound_tradeoff_summary=[];calibration_summary=[]
     fallback_specs=0
+    test_none=[r for r in testm if condition(r)=="none"]
     for d in DETECTORS:
         direction=learn_direction(d,th,tc);spec,diagnostics=select_universal_specification(d,direction,th,tc,ta)
         thresholds,cs=_thresholds(cal,d,direction,spec,"universal");calibration_summary+=cs
@@ -420,7 +447,7 @@ def evaluate_raid(falcon_rows,config=None,binoculars_rows=None,published_binocul
             mr=test_bins.get((i,label),[])
             if not mr:raise ValueError(f"fixed contamination bin {label} has no test rows")
             adaptive_spec,adaptive_diagnostics,adaptive_meta=select_rate_adaptive_specification(
-              d,direction,th,tc,tuning_machine,spec,min_rate_rows)
+              d,direction,th,tc,tuning_machine,spec,min_rate_rows,clean_loss_budget)
             if adaptive_meta["fallback_to_universal"]:fallback_specs+=1
             adaptive_thresholds,adaptive_calibration=_thresholds(
               cal,d,direction,adaptive_spec,"rate_adaptive",i,label)
@@ -430,10 +457,12 @@ def evaluate_raid(falcon_rows,config=None,binoculars_rows=None,published_binocul
             frozen["detectors"][d]["rate_adaptive_bins"][str(i)]={
               "contamination_bin":label,"lower_exclusive":lo,"upper_inclusive":upper,
               "clipping_specification":adaptive_spec,
-              "selection_objective":None if adaptive_selected is None else adaptive_selected["objective"],
+              "selection_mean_attack_auroc_gain":None if adaptive_selected is None else adaptive_selected["mean_attack_auroc_gain"],
+              "selection_clean_auroc_loss":None if adaptive_selected is None else adaptive_selected["clean_auroc_loss"],
+              "selection_constraint_feasible":None if adaptive_selected is None else adaptive_selected["constraint_feasible"],
               "candidate_diagnostics":adaptive_diagnostics,
               "classification_thresholds":adaptive_thresholds,**adaptive_meta}
-            adaptive_raw,adaptive_clipped=_cache(testh+mr,d,direction,adaptive_spec)
+            adaptive_raw,adaptive_clipped=_cache(testh+test_none+mr,d,direction,adaptive_spec)
             for record in adaptive_calibration:
                 domain_humans=[r for r in testh if domain(r)==record["domain"]]
                 record["n_test_human"]=len(domain_humans)
@@ -460,6 +489,28 @@ def evaluate_raid(falcon_rows,config=None,binoculars_rows=None,published_binocul
               reps,_seed(bseed,d,"rho_adaptive",i))
             _add_rate_adaptive_pair(z,adaptive_point,adaptive_ci)
             contamination_summary.append(z)
+
+            tradeoff_groups=[("none","none_counterfactual",test_none),
+              ("all_attacked_in_bin","attacked_bin_aggregate",mr)]
+            tradeoff_groups.extend((name,"attack_bin",[r for r in mr if condition(r)==name])
+              for name in attacks if any(condition(r)==name for r in mr))
+            for comparison_condition,scope,comparison_rows in tradeoff_groups:
+                tuning_count=(len(tuning_machine) if comparison_condition=="all_attacked_in_bin"
+                  else len(tc) if comparison_condition=="none"
+                  else int(adaptive_meta["attack_counts"].get(comparison_condition,0)))
+                q={"detector":d,"contamination_bin_index":i,"contamination_bin":label,
+                  "comparison_condition":comparison_condition,"comparison_scope":scope,
+                  "target_fpr":TARGET_FPR,"n_test_human":len(testh),
+                  "n_test_machine":len(comparison_rows),"n_tuning_machine":tuning_count,
+                  "n_tuning_all_attacks_bin":len(tuning_machine),
+                  "rate_adaptive_clipping_specification":json.dumps(adaptive_spec,sort_keys=True),
+                  "rate_adaptive_fallback_to_universal":adaptive_meta["fallback_to_universal"],
+                  "selection_mean_attack_auroc_gain":None if adaptive_selected is None else adaptive_selected["mean_attack_auroc_gain"],
+                  "selection_clean_auroc_loss":None if adaptive_selected is None else adaptive_selected["clean_auroc_loss"],
+                  **_point(testh,comparison_rows,adaptive_raw,adaptive_clipped,adaptive_thresholds)}
+                _add_ci(q,_bootstrap(testh,comparison_rows,adaptive_raw,adaptive_clipped,
+                  adaptive_thresholds,reps,_seed(bseed,d,"rate_tradeoff",i,comparison_condition)))
+                rate_bound_tradeoff_summary.append(q)
     configured_published=cfg.get("published_binoculars_tpr",{})
     pub=dict(PUBLISHED_BINOCULARS_TPR)
     pub.update({condition({"label":"llm","attack":k}):float(v) for k,v in configured_published.items()})
@@ -471,12 +522,14 @@ def evaluate_raid(falcon_rows,config=None,binoculars_rows=None,published_binocul
       for c,p in pub.items() if c in lookup]
     metrics=_tidy("attack",attack_summary)+_tidy("contamination_rate",contamination_summary)
     counts.update({"attack_summary_rows":len(attack_summary),"contamination_summary_rows":len(contamination_summary),
+      "rate_bound_tradeoff_rows":len(rate_bound_tradeoff_summary),
       "metrics_rows":len(metrics),"calibration_rows":len(calibration_summary),"binoculars_sanity_rows":len(sanity),
       "bootstrap_repetitions":reps,"contamination_cutpoints":cuts,"universal_specs":7,
       "rate_adaptive_specs":len(DETECTORS)*len(RATE_ADAPTIVE_BIN_INDICES),
       "rate_adaptive_fallback_specs":fallback_specs,"attack_specific_specs":0,
       "contamination_record_rows":len(contamination_records)})
-    return RaidEvaluationResult(frozen,metrics,attack_summary,contamination_summary,cuts,sanity,calibration_summary,contamination_records,counts)
+    return RaidEvaluationResult(frozen,metrics,attack_summary,contamination_summary,
+      rate_bound_tradeoff_summary,cuts,sanity,calibration_summary,contamination_records,counts)
 
 def _csv(path,rows):
     temporary=path.with_suffix(path.suffix+".tmp")
@@ -489,9 +542,11 @@ def write_evaluation_artifacts(result,directory):
     p=Path(directory);p.mkdir(parents=True,exist_ok=True)
     paths={n:p/f for n,f in {"frozen_specs":"frozen_specs.json","metrics":"metrics.csv","attack_summary":"attack_summary.csv",
       "contamination_summary":"contamination_summary.csv","binoculars_sanity":"binoculars_sanity.csv",
+      "rate_bound_tradeoff_summary":"rate_bound_tradeoff_summary.csv",
       "calibration_summary":"calibration_summary.csv","contamination_records":"contamination_records.csv",
       "validation_counts":"evaluation_counts.json"}.items()}
     atomic_write_json(paths["frozen_specs"],result.frozen_specs)
     atomic_write_json(paths["validation_counts"],result.validation_counts)
-    for n in ("metrics","attack_summary","contamination_summary","binoculars_sanity","calibration_summary","contamination_records"):_csv(paths[n],getattr(result,n))
+    for n in ("metrics","attack_summary","contamination_summary","rate_bound_tradeoff_summary",
+      "binoculars_sanity","calibration_summary","contamination_records"):_csv(paths[n],getattr(result,n))
     return paths

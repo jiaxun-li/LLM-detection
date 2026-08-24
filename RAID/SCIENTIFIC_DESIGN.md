@@ -14,8 +14,9 @@ specification in each of four fixed realized-contamination intervals:
 \(0<\rho\leq0.05\), \(0.05<\rho\leq0.10\),
 \(0.10<\rho\leq0.20\), and \(0.20<\rho\leq0.50\). Rows with
 \(\rho=0\) or \(\rho>0.50\) remain in the dataset and universal attack
-analysis but are excluded from rate-oracle fitting and reporting. There is no
-attack-specific clipping.
+analysis but are excluded from rate-oracle bin fitting and attacked-bin
+reporting. Unattacked `none` rows are reused only for the clean-loss constraint
+and the counterfactual clean-cost report. There is no attack-specific clipping.
 
 The detector transformations are defined in [`../clipping_method.md`](../clipping_method.md).
 For additive detectors and Binoculars, one specification is a single oriented
@@ -154,15 +155,39 @@ The rate-oracle intervals are fixed a priori at
 \(0<\rho\leq0.05\), \(0.05<\rho\leq0.10\),
 \(0.10<\rho\leq0.20\), and \(0.20<\rho\leq0.50\). They are not
 estimated from tuning quantiles. Rows with \(\rho=0\) and \(\rho>0.50\) are
-excluded only from this analysis. For every interval report its tuning and
+excluded from attacked-bin fitting and evaluation. For every interval report its tuning and
 test counts, median and interquartile range of \(\rho\), attack composition,
 and selected generator/decoding composition.
 
-Fit one clipping specification per detector and fixed interval. Attacks
-represented within an interval receive equal weight in the same 0.8 attack / 0.2
-clean objective used by universal clipping. If an interval has fewer than 250
-tuning machine rows, use the already-frozen universal specification and record
-the fallback; never move the fixed boundaries.
+Fit one clipping specification per detector and fixed interval. Let
+\(A_b\) be the attacks represented in interval \(b\). For a candidate \(c\),
+maximize the equally weighted mean attacked AUROC gain over raw:
+
+$$
+G_b(c)
+=
+\frac{1}{|A_b|}
+\sum_{a\in A_b}
+\left[
+\operatorname{AUROC}(H,M_{a,b};c)
+-
+\operatorname{AUROC}(H,M_{a,b};\mathrm{raw})
+\right],
+$$
+
+subject to the clean-machine constraint
+
+$$
+\operatorname{AUROC}(H,M_{\mathrm{none}};c)
+\geq
+\operatorname{AUROC}(H,M_{\mathrm{none}};\mathrm{raw})-0.01.
+$$
+
+No clipping is the first feasible candidate, so ties retain no clipping. This
+allows a small, prespecified clean loss rather than rewarding clean performance
+inside the rate-specific objective. If an interval has fewer than 250 tuning
+machine rows, use the already-frozen universal specification and record the
+fallback; never move the fixed boundaries.
 
 ## Scoring context and models
 
@@ -309,6 +334,13 @@ For each frozen reporting interval and detector, report:
 - raw, universal-clipped, and rate-oracle-clipped AUROC as secondary diagnostics;
 - sample, source, attack, and generator/decoding counts.
 
+For every fitted interval bound, also report a trade-off table that applies the
+same frozen bound and its corresponding calibration threshold to: (i) all
+unattacked `none` test rows as a counterfactual clean-cost check; (ii) all
+attacked test rows in that interval; and (iii) every attack represented in that
+interval. This table reports paired bound-minus-raw TPR and AUROC with source
+bootstrap intervals. It does not fit attack-specific bounds.
+
 Because the correct rate interval is supplied from the clean/attacked pair,
 the rate-oracle is a diagnostic upper-bound analysis, not a directly deployable
 detector. Universal clipping remains the primary method.
@@ -355,6 +387,7 @@ runs/raid/<run-id>/
 results/raid/<run-id>/
   metrics.csv
   contamination_summary.csv
+  rate_bound_tradeoff_summary.csv
   attack_summary.csv
   binoculars_sanity.csv
   contamination_records.csv
@@ -414,10 +447,12 @@ A scientifically complete full run must satisfy all of the following:
 9. contamination summaries contain only the four fixed intervals through
    \(\rho=0.50\), fit no attack-specific rule, and record every sparse-bin
    fallback to universal clipping;
-10. raw Binoculars sanity output contains the RAID-published comparator values;
-11. stderr contains no traceback, CUDA failure, silent CPU/offload surprise,
+10. every fixed bound has counterfactual `none`, attacked-bin aggregate, and
+    represented-attack trade-off rows with paired intervals;
+11. raw Binoculars sanity output contains the RAID-published comparator values;
+12. stderr contains no traceback, CUDA failure, silent CPU/offload surprise,
     missing attack family, or truncation/schema mismatch;
-12. large data and score packs resolve below `/work/hdd` on Delta.
+13. large data and score packs resolve below `/work/hdd` on Delta.
 
 Smoke and bounded runs must be labeled `debug_only` and cannot be reported as
 scientific results.
