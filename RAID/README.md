@@ -21,3 +21,11 @@ multiple copies of `run_raid.py --stage score` against one run directory.
 
 Bounded checks must use `--limit-sources` and remain `debug_only`. Full results
 must pass `RAID/validate_raid.py`; a Slurm `COMPLETED` state alone is not enough.
+
+`compare_tuning_methods.py` is a separate, CPU-only pilot analysis. It reuses a
+bounded run's completed Falcon and Binoculars score packs, never changes the
+frozen evaluator, and writes only below
+`results/raid/<run-id>/tuning_comparison_v1/`. Its 11 tuning methods and four
+clean-loss budgets are exploratory model selection, not final RAID results.
+Its recorded development source IDs must be excluded from the future full-run
+split because pilot test outcomes are used to choose the final selector.

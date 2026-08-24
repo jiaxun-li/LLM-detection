@@ -161,3 +161,47 @@ Scientific completion requires all of the following:
 
 Retrieve the small `results/raid/<run-id>/` directory. Leave multi-gigabyte
 prepared data, caches, and score packs under `/work/hdd`.
+
+## 5. Evaluation-only tuning comparison on the bounded 500-source pilot
+
+Do not resubmit preparation or either GPU scorer. After pulling the comparison
+code into the same checkout that contains the completed pilot score packs, run:
+
+```bash
+cd ~/LLM-detection-fast-smoke
+export RAID_RUN_ID=raid-pilot-500-20260823T165957Z
+
+TUNING_JOB_ID="$(sbatch --parsable \
+  --account=bhuc-delta-gpu \
+  RAID/delta_raid_tuning_comparison.sbatch)"
+echo "TUNING_JOB_ID=$TUNING_JOB_ID"
+```
+
+The analysis itself is CPU-only and performs no inference. The wrapper reserves
+one GPU because the available `bhuc-delta-gpu` project account accepts GPU-type
+jobs; no additional model is loaded or downloaded. It requests 120 GB host RAM
+because JSON token-feature packs expand substantially when loaded.
+
+The command refuses an unbounded run unless `--allow-full-run` is explicitly
+provided. It reads existing score packs and writes point estimates only under:
+
+```text
+results/raid/<run-id>/tuning_comparison_v1/
+```
+
+Completion requires `comparison.complete.json`, `method_count: 11`, and the
+following tables: selected specifications, candidate diagnostics, universal
+attack results, contamination-rate results, rate-oracle attack-by-rate results,
+counterfactual clean costs, and the compact leaderboard. It also writes
+`development_source_ids.json`; those 500 sources must be excluded before the
+eventual full benchmark is split. This exploratory pass uses no bootstrap and
+does not modify the original pilot's manifest, validated metrics, plots, or
+frozen specifications.
+
+Check completion with:
+
+```bash
+sacct -j "$TUNING_JOB_ID" --format=JobID,JobName,State,Elapsed,MaxRSS,ExitCode
+tail -n 100 "logs/raid-tuning-$TUNING_JOB_ID.err"
+cat "results/raid/$RAID_RUN_ID/tuning_comparison_v1/comparison.complete.json"
+```

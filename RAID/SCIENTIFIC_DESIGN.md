@@ -457,6 +457,56 @@ A scientifically complete full run must satisfy all of the following:
 Smoke and bounded runs must be labeled `debug_only` and cannot be reported as
 scientific results.
 
+## Exploratory selector comparison before the full run
+
+The completed 500-source bounded pilot may be reused for CPU-only selector
+development. This analysis is isolated in `compare_tuning_methods.py`; it does
+not amend the frozen RAID evaluator or overwrite its artifacts. It compares
+three fitting scopes:
+
+1. full universal, using every realized attacked rate;
+2. eligible-range universal, using only \(0<\rho\leq0.50\);
+3. a four-bin rate-specific oracle using the fixed intervals above.
+
+The universal scopes compare mean attack AUROC gain, worst-attack AUROC gain,
+rate-balanced AUROC gain, and cross-fitted TPR gain at 5% FPR. The rate oracle
+compares the same objectives except rate balancing, which is redundant inside
+one fixed interval. This gives 11 unique tuning methods and 12 reported
+approaches after adding raw.
+
+Candidate bounds use the exploratory grid
+
+$$
+\{0.50,0.60,0.70,0.80,0.85,0.90,0.925,0.95,
+0.975,0.99,0.995,0.999\}.
+$$
+
+Every selector is examined under clean-machine AUROC-loss budgets of \(0\),
+\(0.01\), \(0.02\), and \(0.05\). Five-fold cross-fitting is source-grouped and
+domain-stratified within the clipping-tuning split. Final point estimates still
+use the untouched calibration humans to derive separate per-domain 5%-FPR
+thresholds and use only the pilot test split for comparison.
+
+Rows with \(\rho=0\) and \(\rho>0.50\) participate in full-universal tuning.
+They do not participate in eligible-universal or rate-oracle tuning, but every
+universal bound is evaluated on them. The rate oracle is evaluated only inside
+its four eligible intervals and remains non-deployable because it requires the
+counterfactual clean/attacked pair to identify the interval.
+
+These comparisons contain no bootstrap confidence intervals and are explicitly
+labeled `PILOT_DEBUG_NOT_FOR_FINAL_REPORTING`. After inspection, exactly one
+universal selector, quantile grid, and clean-loss budget must be chosen and
+frozen before any full RAID run. Test outcomes from the eventual full run may
+not alter that choice.
+
+Because selector and budget choice will inspect pilot test outcomes, every
+source used by the 500-source pilot becomes development data. The comparison
+writes their IDs to `development_source_ids.json`. A future full benchmark must
+exclude every one of those IDs before making its tuning/calibration/test split
+and must validate zero overlap. Until that exclusion path is implemented and
+tested, the full benchmark must not be launched. This preserves an independent
+final test while making the pilot a legitimate model-selection experiment.
+
 ## Delta execution contract
 
 The Delta orchestrator is `RAID/submit_raid.sh`. It submits a CPU preparation

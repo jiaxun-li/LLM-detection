@@ -256,6 +256,17 @@ For each rate-specific bound, RAID separately reports its counterfactual effect
 on unattacked `none` rows and its effect on the aggregate and attack-specific
 test rows in the corresponding rate interval.
 
+Before freezing the full RAID analysis, the bounded 500-source pilot also has a
+separate exploratory selector comparison. It crosses full-universal and
+eligible-range-universal fitting with four selectors, and four-bin rate-oracle
+fitting with three nonredundant selectors. It examines four clean-AUROC-loss
+budgets and a denser candidate quantile grid. These 11 methods are implemented
+in `RAID/compare_tuning_methods.py`, write separate point-estimate artifacts,
+and do not change the frozen primary evaluator. Their sole purpose is to choose
+one universal protocol before the full benchmark is run. Since that choice
+uses pilot test outcomes, the comparison records all pilot source IDs and the
+future full benchmark must exclude them before creating its final split.
+
 ## Calibration and final evaluation
 
 Raw and clipped aggregation receive separate calibration thresholds. In the

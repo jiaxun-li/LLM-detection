@@ -18,6 +18,10 @@ from RAID.raid_evaluation import (
     token_edit_counts,
     write_evaluation_artifacts,
 )
+from RAID.compare_tuning_methods import (
+    compare_tuning_methods,
+    write_comparison_artifacts,
+)
 
 ATTACKS = [
     "alternative_spelling", "article_deletion", "homoglyph", "insert_paragraphs",
@@ -183,6 +187,83 @@ class RaidEvaluationTests(unittest.TestCase):
             evaluate_raid(protocol_rows(),{"target_fpr":.01})
         with self.assertRaisesRegex(ValueError,"frozen"):
             evaluate_raid(protocol_rows(),{"rate_adaptive_cutpoints":[.1,.2,.3,.4]})
+
+    def test_exploratory_comparison_has_eleven_methods_and_preserves_raw(self):
+        rows = protocol_rows()
+        falcon = []
+        binoculars = []
+        for record in rows:
+            falcon.append(
+                {
+                    **record,
+                    "token_features": {
+                        name: value
+                        for name, value in record["token_features"].items()
+                        if name
+                        not in (
+                            "performer_nll",
+                            "observer_to_performer_cross_entropy",
+                        )
+                    },
+                }
+            )
+            binoculars.append(
+                {
+                    **record,
+                    "token_features": {
+                        name: value
+                        for name, value in record["token_features"].items()
+                        if name
+                        in (
+                            "performer_nll",
+                            "observer_to_performer_cross_entropy",
+                        )
+                    },
+                }
+            )
+        result = compare_tuning_methods(
+            falcon,
+            binoculars,
+            expected_attacks=ATTACKS,
+            quantiles=(.8, .95),
+            clean_loss_budgets=(0.0, .01),
+            crossfit_folds=2,
+            crossfit_seed=17,
+        )
+        self.assertEqual(result["manifest"]["method_count"], 11)
+        self.assertEqual(result["manifest"]["reported_approach_count_including_raw"], 12)
+        self.assertEqual(len(result["selected_specs"]), 7 * 2 * (8 + 3 * 4))
+        self.assertEqual(len(result["leaderboard"]), 7 * 2 * 11)
+        self.assertEqual(
+            {row["scope"] for row in result["selected_specs"]},
+            {"full_universal", "eligible_universal", "rate_specific_oracle"},
+        )
+        self.assertEqual(
+            {row["clean_loss_budget"] for row in result["selected_specs"]},
+            {0.0, .01},
+        )
+        raw_cells = {}
+        for record in result["universal_attack_results"]:
+            key = (record["detector"], record["condition"])
+            raw_cells.setdefault(key, set()).add(record["raw_tpr"])
+        self.assertTrue(all(len(values) == 1 for values in raw_cells.values()))
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = write_comparison_artifacts(result, temporary)
+            self.assertEqual(len(paths), 9)
+            complete = json.loads(
+                (Path(temporary) / "comparison.complete.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(complete["status"], "complete")
+            self.assertEqual(complete["method_count"], 11)
+            development = json.loads(
+                (Path(temporary) / "development_source_ids.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertTrue(development["must_be_excluded_from_future_full_benchmark"])
+            self.assertEqual(development["source_count"], 12)
 
 if __name__=="__main__":
     unittest.main()
