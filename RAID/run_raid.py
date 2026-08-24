@@ -45,6 +45,10 @@ def parse_args(default_stage: str | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--limit-sources", type=int)
     parser.add_argument("--bootstrap-repetitions", type=int)
+    parser.add_argument(
+        "--exclude-source-ids-path",
+        help="JSON source_ids list that is excluded before the full split.",
+    )
     parser.add_argument("--skip-binoculars", action="store_true")
     parser.add_argument("--debug-only", action="store_true")
     parser.add_argument(
@@ -84,7 +88,10 @@ def main(default_stage: str | None = None) -> None:
     if args.num_shards is not None and args.num_shards < 1:
         raise ValueError("RAID num_shards must be positive")
     if args.adopt_prepared_run_dir and (
-        args.reuse_index_path or args.reset_index or args.data_path
+        args.reuse_index_path
+        or args.reset_index
+        or args.data_path
+        or args.exclude_source_ids_path
     ):
         raise ValueError(
             "adopted preparation cannot be combined with data/index preparation options"
@@ -109,9 +116,18 @@ def main(default_stage: str | None = None) -> None:
         if adopted_data_provenance is None:
             raise ValueError("adopted preparation manifest lacks input provenance")
     run_dir, results_dir = run_paths(workspace, config, args.run_id)
+    manifest_path = run_dir / "manifest.json"
+    if (
+        not manifest_path.exists()
+        and args.limit_sources is None
+        and not args.exclude_source_ids_path
+    ):
+        raise ValueError(
+            "a new unbounded RAID run requires --exclude-source-ids-path for "
+            "the frozen 500-source development exclusion"
+        )
     run_dir.mkdir(parents=True, exist_ok=True)
     results_dir.mkdir(parents=True, exist_ok=True)
-    manifest_path = run_dir / "manifest.json"
     if manifest_path.exists():
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         validate_resume_manifest(
@@ -126,6 +142,7 @@ def main(default_stage: str | None = None) -> None:
             index_cache_dir=args.index_cache_dir,
             reuse_index_path=args.reuse_index_path,
             adopt_prepared_run_dir=args.adopt_prepared_run_dir,
+            source_exclusion_path=args.exclude_source_ids_path,
         )
     else:
         if args.data_path is not None:
@@ -147,6 +164,7 @@ def main(default_stage: str | None = None) -> None:
             reuse_index_path=args.reuse_index_path,
             data_provenance=adopted_data_provenance,
             adopt_prepared_run_dir=args.adopt_prepared_run_dir,
+            source_exclusion_path=args.exclude_source_ids_path,
         )
         print("RAID initialization: input provenance complete", flush=True)
         manifest["config_path"] = str(config_path)
@@ -178,6 +196,11 @@ def main(default_stage: str | None = None) -> None:
                         num_shards=int(manifest.get("num_score_shards", 1)),
                         index_cache_dir=manifest.get("index_cache_dir"),
                         reuse_index_path=manifest.get("reuse_index_path"),
+                        source_exclusion_path=(
+                            None
+                            if manifest.get("source_exclusions") is None
+                            else manifest["source_exclusions"]["path"]
+                        ),
                     )
             elif stage == "score":
                 outputs = score_stage(
@@ -202,6 +225,12 @@ def main(default_stage: str | None = None) -> None:
                         limit_sources=args.limit_sources,
                         bootstrap_repetitions=args.bootstrap_repetitions,
                         skip_binoculars=args.skip_binoculars,
+                        source_exclusion_path=(
+                            None
+                            if manifest.get("source_exclusions") is None
+                            else manifest["source_exclusions"]["path"]
+                        ),
+                        debug_only=bool(manifest.get("debug_only", False)),
                     )
                 }
             manifest["outputs"].update(outputs)

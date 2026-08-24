@@ -112,6 +112,15 @@ def _attack_plot(results_dir: Path, plt: Any) -> Path:
             color="#d64541",
             marker="s",
         )
+        _plot_series(
+            axis,
+            x,
+            selected,
+            "eligible_universal_clipped",
+            label="Eligible-universal clipped",
+            color="#805ad5",
+            marker="^",
+        )
         if detector == "binoculars":
             published_x = [i for i, name in enumerate(ATTACK_ORDER) if name in sanity]
             axis.scatter(
@@ -136,7 +145,7 @@ def _attack_plot(results_dir: Path, plt: Any) -> Path:
         )
         axis.set_ylabel("TPR at calibrated 5% FPR")
         axis.legend(fontsize=8, loc="best")
-    figure.suptitle("RAID attack robustness: raw versus universal clipping")
+    figure.suptitle("RAID attack robustness: raw and two universal clipping scopes")
     figure.tight_layout()
     output = results_dir / "plots" / "raid_attack_tpr.png"
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -171,6 +180,15 @@ def _contamination_plot(results_dir: Path, plt: Any) -> Path:
             label="Universal clipped",
             color="#d64541",
             marker="s",
+        )
+        _plot_series(
+            axis,
+            x,
+            selected,
+            "eligible_universal_clipped",
+            label="Eligible-universal clipped",
+            color="#805ad5",
+            marker="D",
         )
         _plot_series(
             axis,

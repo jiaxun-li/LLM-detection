@@ -22,13 +22,20 @@ multiple copies of `run_raid.py --stage score` against one run directory.
 Bounded checks must use `--limit-sources` and remain `debug_only`. Full results
 must pass `RAID/validate_raid.py`; a Slurm `COMPLETED` state alone is not enough.
 
+The frozen evaluator reports raw, full-universal clipped, and
+eligible-universal clipped results for all seven detectors. It retains the four
+fixed contamination-rate bounds as a secondary oracle analysis. Every
+unbounded preparation must receive the pilot's 500-source
+`development_source_ids.json` through `EXCLUDE_SOURCE_IDS_PATH`; the manifest
+hashes that file and validation enforces exact exclusion and zero overlap.
+
 `compare_tuning_methods.py` is a separate, CPU-only pilot analysis. It reuses a
 bounded run's completed Falcon and Binoculars score packs, never changes the
 frozen evaluator, and writes only below
 `results/raid/<run-id>/tuning_comparison_v1/`. Its 11 tuning methods and four
 clean-loss budgets are exploratory model selection, not final RAID results.
-Its recorded development source IDs must be excluded from the future full-run
-split because pilot test outcomes are used to choose the final selector.
+Its recorded development source IDs are excluded from the full-run split
+because pilot test outcomes were used to choose the final selector.
 
 `compare_trimmed_mean.py` is another isolated, CPU-only pilot analysis. It
 tests one-sided token trimming at fractions 0, 0.5%, 1%, 2.5%, 5%, 10%, and

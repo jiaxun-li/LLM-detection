@@ -207,6 +207,30 @@ class RaidSelectionTests(unittest.TestCase):
             self.assertEqual(first_report["split_domain_counts"], expected)
             self.assertEqual(second_report["split_domain_counts"], expected)
 
+    def test_development_sources_are_excluded_before_splitting(self) -> None:
+        records = []
+        for index in range(6):
+            records.extend(_source_family(f"s{index}"))
+        with tempfile.TemporaryDirectory() as temporary:
+            index_path = Path(temporary) / "raid.sqlite"
+            index_raid_records(records, index_path)
+            selected, exclusions, report = select_complete_families(
+                index_path,
+                selection_seed=11,
+                split_seed=12,
+                excluded_source_ids={"s1", "s4"},
+            )
+        self.assertEqual({row["source_id"] for row in selected},
+                         {"s0", "s2", "s3", "s5"})
+        self.assertEqual(
+            {row["source_id"] for row in exclusions
+             if row["reason"] == "pilot_development_source"},
+            {"s1", "s4"},
+        )
+        self.assertEqual(report["requested_development_source_exclusions"], 2)
+        self.assertEqual(report["applied_development_source_exclusions"], 2)
+        self.assertEqual(report["missing_development_source_exclusions"], [])
+
     def test_full_preparation_is_restart_safe_and_has_thirteen_rows_per_source(self) -> None:
         records = []
         for index in range(5):

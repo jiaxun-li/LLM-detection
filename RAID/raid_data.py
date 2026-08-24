@@ -523,6 +523,7 @@ def select_complete_families(
     split_seed: int,
     split_fractions: Mapping[str, float] = DEFAULT_SPLIT_FRACTIONS,
     limit_sources: int | None = None,
+    excluded_source_ids: set[str] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     """Select one uniformly random complete family using one grouped SQL scan.
 
@@ -538,6 +539,8 @@ def select_complete_families(
     exclusions: list[dict[str, Any]] = []
     incomplete_family_count = 0
     scanned_sources = 0
+    requested_exclusions = {str(value) for value in (excluded_source_ids or set())}
+    applied_exclusions: set[str] = set()
     bounded_scan_complete = limit_sources is None
     if limit_sources is not None and int(limit_sources) < 1:
         raise ValueError("limit_sources must be positive")
@@ -550,6 +553,15 @@ def select_complete_families(
     def add_source(source_id: str, payloads: Iterable[str]) -> None:
         nonlocal incomplete_family_count, scanned_sources
         scanned_sources += 1
+        if source_id in requested_exclusions:
+            applied_exclusions.add(source_id)
+            exclusions.append(
+                {
+                    "source_id": source_id,
+                    "reason": "pilot_development_source",
+                }
+            )
+            return
         records = [json.loads(payload) for payload in payloads]
         humans = [row for row in records if row["record_kind"] == "human"]
         if len(humans) != 1:
@@ -648,6 +660,16 @@ def select_complete_families(
 
     if limit_sources is not None:
         selected = _round_robin_limit(selected, int(limit_sources), selection_seed)
+    missing_requested_exclusions = sorted(requested_exclusions - applied_exclusions)
+    if limit_sources is None and missing_requested_exclusions:
+        raise ValueError(
+            "full RAID selection did not find every requested development-source "
+            f"exclusion: {missing_requested_exclusions[:10]}"
+        )
+    selected_ids = {str(row["source_id"]) for row in selected}
+    overlap = sorted(selected_ids & requested_exclusions)
+    if overlap:
+        raise AssertionError(f"excluded RAID sources were selected: {overlap[:10]}")
     assignments = _split_assignments(selected, split_seed, split_fractions)
     for source in selected:
         source["split"] = assignments[source["source_id"]]
@@ -679,6 +701,9 @@ def select_complete_families(
         "selection_scanned_sources": scanned_sources,
         "selected_sources": len(selected),
         "excluded_sources": len(exclusions),
+        "requested_development_source_exclusions": len(requested_exclusions),
+        "applied_development_source_exclusions": len(applied_exclusions),
+        "missing_development_source_exclusions": missing_requested_exclusions,
         "incomplete_families": incomplete_family_count,
         "split_domain_counts": split_domain_counts,
     }
@@ -845,6 +870,7 @@ def prepare_raid_data(
     reset_index: bool = False,
     reuse_index: bool = False,
     fast_reuse_validation: bool = False,
+    excluded_source_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     """Index, sample, split, and append the frozen RAID one-to-one dataset."""
     if reuse_index and reset_index:
@@ -868,6 +894,7 @@ def prepare_raid_data(
         split_seed=split_seed,
         split_fractions=split_fractions,
         limit_sources=limit_sources,
+        excluded_source_ids=excluded_source_ids,
     )
     manifest_rows = [selected_source_manifest_row(source_row) for source_row in selected]
     manifest_count = _append_unique_rows(

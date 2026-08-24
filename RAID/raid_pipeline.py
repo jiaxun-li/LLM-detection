@@ -84,6 +84,8 @@ def load_raid_config(path: str | Path) -> dict[str, Any]:
     }
     if any(abs(float(fractions[key]) - value) > 1e-12 for key, value in expected_fractions.items()):
         raise ValueError("RAID must use the frozen 40/20/40 source split")
+    if int(config["selection"].get("required_development_source_exclusions", -1)) != 500:
+        raise ValueError("RAID full runs must exclude the 500-source development pilot")
     if tuple(config["scoring"].get("detectors", ())) != EXPECTED_DETECTORS:
         raise ValueError("RAID must use the frozen seven-detector order")
     if config["models"]["falcon"].get("id") != "tiiuae/falcon-7b":
@@ -172,6 +174,37 @@ def _input_provenance(data_path: str | Path | None) -> dict[str, Any] | None:
     }
 
 
+def load_source_exclusion_ids(path: str | Path) -> set[str]:
+    source = Path(path).resolve()
+    if not source.is_file():
+        raise FileNotFoundError(f"RAID source-exclusion file is missing: {source}")
+    payload = json.loads(source.read_text(encoding="utf-8"))
+    values = payload.get("source_ids") if isinstance(payload, dict) else payload
+    if not isinstance(values, list) or not values:
+        raise ValueError("RAID source-exclusion JSON must contain a nonempty source_ids list")
+    identifiers = [str(value) for value in values]
+    if any(not value for value in identifiers):
+        raise ValueError("RAID source-exclusion IDs must be nonempty")
+    if len(set(identifiers)) != len(identifiers):
+        raise ValueError("RAID source-exclusion IDs contain duplicates")
+    if isinstance(payload, dict) and payload.get("source_count") is not None:
+        if int(payload["source_count"]) != len(identifiers):
+            raise ValueError("RAID source-exclusion source_count disagrees with source_ids")
+    return set(identifiers)
+
+
+def _source_exclusion_provenance(
+    path: str | Path | None,
+) -> dict[str, Any] | None:
+    if path is None:
+        return None
+    provenance = _input_provenance(path)
+    if provenance is None:
+        raise AssertionError("source-exclusion provenance unexpectedly missing")
+    identifiers = load_source_exclusion_ids(path)
+    return {**provenance, "source_count": len(identifiers)}
+
+
 def initial_manifest(
     run_id: str,
     workspace: str | Path,
@@ -187,9 +220,23 @@ def initial_manifest(
     reuse_index_path: str | Path | None = None,
     data_provenance: dict[str, Any] | None = None,
     adopt_prepared_run_dir: str | Path | None = None,
+    source_exclusion_path: str | Path | None = None,
 ) -> dict[str, Any]:
     root = Path(workspace).resolve()
     dirty = _git_value(root, "status", "--porcelain")
+    source_exclusions = _source_exclusion_provenance(source_exclusion_path)
+    required_exclusions = int(
+        config["selection"].get("required_development_source_exclusions", 0)
+    )
+    if limit_sources is None and (
+        source_exclusions is None
+        or int(source_exclusions["source_count"]) != required_exclusions
+    ):
+        observed = 0 if source_exclusions is None else source_exclusions["source_count"]
+        raise ValueError(
+            "a full RAID run requires exactly "
+            f"{required_exclusions} development-source exclusions, got {observed}"
+        )
     return {
         "run_id": run_id,
         "protocol": config["protocol_name"],
@@ -207,6 +254,7 @@ def initial_manifest(
         ),
         "limit_sources": limit_sources,
         "bootstrap_repetitions_override": bootstrap_repetitions,
+        "source_exclusions": source_exclusions,
         "binoculars_included": not skip_binoculars,
         "num_score_shards": int(num_shards),
         "index_cache_dir": (
@@ -246,6 +294,7 @@ def validate_resume_manifest(
     index_cache_dir: str | Path | None = None,
     reuse_index_path: str | Path | None = None,
     adopt_prepared_run_dir: str | Path | None = None,
+    source_exclusion_path: str | Path | None = None,
 ) -> None:
     root = Path(manifest.get("workspace", ".")).resolve()
     dirty = _git_value(root, "status", "--porcelain")
@@ -260,6 +309,11 @@ def validate_resume_manifest(
         ),
         "limit_sources": limit_sources,
         "bootstrap_repetitions_override": bootstrap_repetitions,
+        "source_exclusions": (
+            manifest.get("source_exclusions")
+            if source_exclusion_path is None
+            else _source_exclusion_provenance(source_exclusion_path)
+        ),
         "binoculars_included": not skip_binoculars,
         "git_commit": _git_value(root, "rev-parse", "HEAD"),
         "dirty_worktree": None if dirty is None else bool(dirty),
@@ -426,6 +480,7 @@ def prepare_stage(
     num_shards: int = 1,
     index_cache_dir: str | Path | None = None,
     reuse_index_path: str | Path | None = None,
+    source_exclusion_path: str | Path | None = None,
 ) -> dict[str, Any]:
     if data_path is not None:
         source: Any = Path(data_path).resolve()
@@ -528,6 +583,11 @@ def prepare_stage(
         reset_index=reset_index,
         reuse_index=reuse_index,
         fast_reuse_validation=fast_reuse_validation,
+        excluded_source_ids=(
+            set()
+            if source_exclusion_path is None
+            else load_source_exclusion_ids(source_exclusion_path)
+        ),
     )
     summary["index_cache"] = cache_summary
     summary["expected_paper_sources"] = config["dataset"].get(
@@ -1030,6 +1090,8 @@ def validate_artifacts(
     limit_sources: int | None,
     bootstrap_repetitions: int | None,
     skip_binoculars: bool,
+    source_exclusion_path: str | Path | None = None,
+    debug_only: bool = False,
 ) -> dict[str, Any]:
     if skip_binoculars:
         raise ValueError("a scientifically complete RAID run requires Binoculars")
@@ -1061,13 +1123,44 @@ def validate_artifacts(
     data_rows = list(iter_jsonl(run_dir / "data.jsonl"))
     required_attacks = set(config["dataset"]["required_attacks"])
     prepared = _validate_prepared_rows(data_rows, required_attacks)
+    selected_source_ids = {str(row["source_id"]) for row in data_rows}
+    excluded_source_ids = (
+        set()
+        if source_exclusion_path is None
+        else load_source_exclusion_ids(source_exclusion_path)
+    )
+    overlap = sorted(selected_source_ids & excluded_source_ids)
+    if overlap:
+        raise ValueError(f"RAID selected excluded development sources: {overlap[:10]}")
+    required_exclusions = int(
+        config["selection"].get("required_development_source_exclusions", 0)
+    )
+    if limit_sources is None and len(excluded_source_ids) != required_exclusions:
+        raise ValueError(
+            "RAID full run has the wrong development-source exclusion count: "
+            f"{len(excluded_source_ids)}/{required_exclusions}"
+        )
+    prepare_summary = json.loads(
+        (run_dir / "prepare.complete.json").read_text(encoding="utf-8")
+    )
+    if int(prepare_summary.get("applied_development_source_exclusions", 0)) != len(
+        excluded_source_ids
+    ):
+        raise ValueError("RAID preparation did not apply every development-source exclusion")
     if set(prepared["domain_sources"]) != set(RAID_DOMAINS):
         raise ValueError("RAID prepared data does not cover all eight core domains")
     recognized_counts = {
         int(value)
         for value in config["dataset"].get("recognized_full_source_counts", ())
     }
-    if limit_sources is None and recognized_counts and prepared["sources"] not in recognized_counts:
+    recognized_after_exclusion = {
+        count - len(excluded_source_ids) for count in recognized_counts
+    }
+    if (
+        limit_sources is None
+        and recognized_after_exclusion
+        and prepared["sources"] not in recognized_after_exclusion
+    ):
         raise ValueError(
             "RAID full source count is not a recognized labeled release or paper snapshot"
         )
@@ -1128,11 +1221,21 @@ def validate_artifacts(
     )
     if int(evaluation_counts.get("bootstrap_repetitions", -1)) != repetitions:
         raise ValueError("RAID evaluation used the wrong bootstrap repetitions")
+    if (
+        limit_sources is None
+        and not debug_only
+        and repetitions != int(config["evaluation"]["bootstrap_repetitions"])
+    ):
+        raise ValueError(
+            "a non-debug full RAID result must use the frozen final bootstrap count"
+        )
     if evaluation_counts.get("detectors") != list(EXPECTED_DETECTORS):
         raise ValueError("RAID evaluation detector list is incomplete")
     if evaluation_counts.get("target_fprs") != [0.05]:
         raise ValueError("RAID evaluation must contain only the 5% FPR target")
-    if int(evaluation_counts.get("universal_specs", -1)) != 7 or int(
+    if int(evaluation_counts.get("universal_specs", -1)) != 14 or int(
+        evaluation_counts.get("full_universal_specs", -1)
+    ) != 7 or int(evaluation_counts.get("eligible_universal_specs", -1)) != 7 or int(
         evaluation_counts.get("rate_adaptive_specs", -1)
     ) != 7 * len(RATE_ADAPTIVE_BIN_INDICES) or int(
         evaluation_counts.get("attack_specific_specs", -1)
@@ -1176,8 +1279,15 @@ def validate_artifacts(
         "paired_tpr_difference_ci_low",
         "paired_tpr_difference_ci_high",
     }
+    eligible_ci_columns = {
+        "eligible_universal_clipped_tpr_ci_low",
+        "eligible_universal_clipped_tpr_ci_high",
+        "eligible_universal_paired_tpr_difference_ci_low",
+        "eligible_universal_paired_tpr_difference_ci_high",
+    }
     if repetitions > 0 and any(
-        not ci_columns.issubset(row) or any(row[name] == "" for name in ci_columns)
+        not (ci_columns | eligible_ci_columns).issubset(row)
+        or any(row[name] == "" for name in ci_columns | eligible_ci_columns)
         for row in attack_rows
     ):
         raise ValueError("RAID attack summary lacks bootstrap confidence intervals")
@@ -1198,8 +1308,8 @@ def validate_artifacts(
         "rate_adaptive_paired_tpr_difference_ci_high",
     }
     if repetitions > 0 and any(
-        not adaptive_ci_columns.issubset(row)
-        or any(row[name] == "" for name in adaptive_ci_columns)
+        not (adaptive_ci_columns | eligible_ci_columns).issubset(row)
+        or any(row[name] == "" for name in adaptive_ci_columns | eligible_ci_columns)
         for row in contamination_rows
     ):
         raise ValueError("RAID rate-adaptive summary lacks bootstrap confidence intervals")
@@ -1240,15 +1350,21 @@ def validate_artifacts(
     contamination_metrics = [
         row for row in metrics if row["analysis"] == "contamination_rate"
     ]
-    if {row["aggregation"] for row in attack_metrics} != {"raw", "clipped"}:
-        raise ValueError("RAID attack metrics must contain paired raw and universal-clipped rows")
+    if {row["aggregation"] for row in attack_metrics} != {
+        "raw", "full_universal_clipped", "eligible_universal_clipped"
+    }:
+        raise ValueError("RAID attack metrics must contain both universal scopes")
     if {row["aggregation"] for row in contamination_metrics} != {
         "raw",
-        "clipped",
+        "full_universal_clipped",
+        "eligible_universal_clipped",
         "rate_adaptive_clipped",
     }:
         raise ValueError("RAID contamination metrics are missing the fixed-rate oracle")
-    expected_metrics = 7 * len(RAID_ATTACKS) * 2 + 7 * len(RATE_ADAPTIVE_BIN_INDICES) * 3
+    expected_metrics = (
+        7 * len(RAID_ATTACKS) * 3
+        + 7 * len(RATE_ADAPTIVE_BIN_INDICES) * 4
+    )
     if len(metrics) != expected_metrics:
         raise ValueError("RAID metrics have the wrong number of attack/rate rows")
     if {float(row["target_fpr"]) for row in metrics} != {0.05}:
@@ -1265,6 +1381,8 @@ def validate_artifacts(
         "attack_specific_clipping"
     ) is not False:
         raise ValueError("RAID frozen specs do not contain the fixed-rate oracle")
+    if frozen.get("universal_scopes") != ["full_universal", "eligible_universal"]:
+        raise ValueError("RAID frozen specs do not contain both universal scopes")
     if tuple(frozen.get("contamination_cutpoints", ())) != RATE_ADAPTIVE_CUTPOINTS:
         raise ValueError("RAID frozen specs contain the wrong rate boundaries")
     if abs(
@@ -1276,6 +1394,11 @@ def validate_artifacts(
         raise ValueError("RAID frozen specs contain the wrong constrained selection rule")
     if set(frozen.get("detectors", {})) != set(EXPECTED_DETECTORS):
         raise ValueError("RAID frozen specs are missing detectors")
+    if any(
+        "eligible_universal_clipping_specification" not in detector_spec
+        for detector_spec in frozen["detectors"].values()
+    ):
+        raise ValueError("RAID frozen specs are missing eligible-universal bounds")
     if any(
         set(spec.get("rate_adaptive_bins", {})) != {"1", "2", "3", "4"}
         for spec in frozen["detectors"].values()
@@ -1292,13 +1415,17 @@ def validate_artifacts(
 
     report = {
         "validation_status": "pass",
-        "debug_only": limit_sources is not None,
+        "debug_only": bool(debug_only or limit_sources is not None),
         **prepared,
         "score_rows": score_counts,
         "num_score_shards": num_score_shards,
         "detectors": list(EXPECTED_DETECTORS),
         "target_fpr": 0.05,
         "bootstrap_repetitions": repetitions,
+        "development_source_exclusions": len(excluded_source_ids),
+        "source_exclusion_provenance": _source_exclusion_provenance(
+            source_exclusion_path
+        ),
         "metrics_rows": len(metrics),
         "attack_summary_rows": len(attack_rows),
         "contamination_summary_rows": len(contamination_rows),

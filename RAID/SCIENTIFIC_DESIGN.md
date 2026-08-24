@@ -8,8 +8,12 @@ realistic-edit benchmark. RAID is used to test whether the same one-sided
 token-level clipping intervention remains useful under naturally heterogeneous,
 attack-generated contamination.
 
-The primary method fits one universal clipping specification per detector. A
-secondary rate-oracle analysis fits one additional detector-specific
+The primary method family fits two universal clipping specifications per
+detector. The **full-universal** specification uses all eleven attacked
+conditions. The **eligible-universal** specification uses only attacked tuning
+rows with \(0<\rho\leq0.50\). Both produce one deployable bound per detector;
+neither needs the attack name or contamination rate at test time. A secondary
+rate-oracle analysis fits one additional detector-specific
 specification in each of four fixed realized-contamination intervals:
 \(0<\rho\leq0.05\), \(0.05<\rho\leq0.10\),
 \(0.10<\rho\leq0.20\), and \(0.20<\rho\leq0.50\). Rows with
@@ -28,9 +32,9 @@ detectors because their local evidence and scales differ.
 
 1. Does raw Binoculars on the retained RAID sample show the same broad attack
    pattern as the published RAID benchmark at 5% FPR?
-2. Does one universally fitted clipping specification improve TPR at 5% FPR
+2. Do full-universal and eligible-universal clipping improve TPR at 5% FPR
    for the seven detector methods under RAID attacks?
-3. How do universal and rate-oracle clipping compare within four fixed,
+3. How do the two universal methods and rate-oracle clipping compare within four fixed,
    practically interpretable realized-contamination intervals?
 4. Does clipping preserve useful detection on the unattacked machine condition?
 
@@ -80,6 +84,15 @@ If a selected family lacks any required attack, selection is repeated among the
 source's complete families. A source with no complete family is excluded and
 reported explicitly.
 
+The completed 500-source pilot was used to choose which fitting scopes to carry
+forward. Its exact source IDs are therefore development data. Before the final
+source split is made, all 500 IDs must be excluded from the available source
+universe. The exclusion JSON's absolute path, SHA-256 digest, byte size, and
+source count are stored in the run manifest; preparation records all applied
+IDs; and validation requires exact application and zero overlap. The RAID CSV,
+checksum-keyed relationship index, pilot score packs, and pilot results are
+preserved unchanged.
+
 With all 14,971 sources retained, the expected sample is:
 
 | Record type | Count |
@@ -93,10 +106,13 @@ With all 14,971 sources retained, the expected sample is:
 Human documents are stored once and reused across detector configurations and
 attack comparisons. They are not physically duplicated twelve times.
 
-For the current 13,371-source public labeled training release, the analogous
-expected counts are 13,371 human rows, 160,452 machine-condition rows, and
-173,823 total prepared rows. The validator accepts only this labeled-release
-count or the 14,971-source archival paper count for a non-debug full run.
+Before development-source exclusion, the current 13,371-source public labeled
+training release contains 13,371 human rows, 160,452 machine-condition rows,
+and 173,823 total prepared rows. After excluding the 500 pilot sources, the
+expected final labeled-release sample is 12,871 sources, 154,452
+machine-condition rows, and 167,323 total prepared rows. An archival
+14,971-source snapshot would analogously retain 14,471 sources. The validator
+accepts only these post-exclusion counts for an unbounded run.
 
 ## Frozen source split
 
@@ -105,9 +121,9 @@ domain-stratified random assignment:
 
 | Split | Fraction | Approximate sources | Purpose |
 |---|---:|---:|---|
-| `clipping_tuning` | 40% | 5,988 | Fit orientation, universal clipping, and four rate-oracle specifications per detector |
-| `calibration` | 20% | 2,994 | Fit per-domain thresholds for every raw or clipped configuration at 5% FPR |
-| `test` | 40% | 5,989 | Final attack- and contamination-rate evaluation |
+| `clipping_tuning` | 40% | 5,148 | Fit orientation, both universal bounds, and four rate-oracle specifications per detector |
+| `calibration` | 20% | 2,574 | Fit per-domain thresholds for every raw or clipped configuration at 5% FPR |
+| `test` | 40% | 5,149 | Final attack- and contamination-rate evaluation |
 
 Every selected clean/attacked machine family stays with its human source in one
 split. Split counts are resolved deterministically after the available source
@@ -256,8 +272,7 @@ The no-clipping specification is the first candidate. Additive detectors and
 Binoculars receive seven oriented lower-bound candidates. LRR receives all 49
 pairs of NLL and log-rank upper caps.
 
-For detector \(d\) and candidate specification \(c\), select one universal
-specification with
+For detector \(d\) and candidate specification \(c\), define
 
 $$
 J_d(c)
@@ -272,13 +287,16 @@ J_d(c)
 0.2\,\operatorname{AUROC}(H,M_{\mathrm{clean}};c).
 $$
 
-Every attack receives equal weight. The clean-machine component prevents a
-candidate from being selected solely by sacrificing unattacked detection.
+For **full-universal** fitting, the mean contains all eleven attacks. For
+**eligible-universal** fitting, it contains every attack represented among
+tuning rows with \(0<\rho\leq0.50\), still with equal weight per represented
+attack rather than per row. In both scopes, the clean-machine component prevents
+a candidate from being selected solely by sacrificing unattacked detection.
 Ties within numerical tolerance retain the earlier candidate, and candidate
-order begins with no clipping. The fitted orientation and universal
-detector-specific specification are frozen for every domain and attack. The
-four rate-oracle specifications are separately frozen and used only for test
-rows in their corresponding fixed intervals.
+order begins with no clipping. Both detector-specific universal specifications
+are frozen for every domain and attack. The four rate-oracle specifications are
+separately frozen and used only for test rows in their corresponding fixed
+intervals.
 
 Detector-specific clipping follows `clipping_method.md` exactly:
 
@@ -292,9 +310,9 @@ Official raw Binoculars is never replaced by its clipped extension.
 
 ## Calibration at 5% FPR
 
-For every detector, domain, and clipping specification, derive separate raw
-and clipped classification thresholds from only the human documents in the
-`calibration` split. Use the
+For every detector, domain, and clipping specification, derive separate raw,
+full-universal, eligible-universal, and rate-oracle classification thresholds
+from only the human documents in the `calibration` split. Use the
 conservative empirical threshold whose achieved calibration FPR is closest to
 but does not exceed 5%, following RAID's low-FPR evaluation principle.
 
@@ -308,13 +326,14 @@ classification threshold may use final-test outcomes.
 
 ### Attack-level analysis
 
-For every detector and each of the twelve machine conditions, report raw and
-clipped TPR at calibrated 5% FPR. The paired clipping effect is
+For every detector and each of the twelve machine conditions, report raw,
+full-universal, and eligible-universal TPR at calibrated 5% FPR. For either
+universal method \(u\), the paired clipping effect is
 
 $$
-\Delta_{d,a}
+\Delta_{d,a,u}
 =
-\operatorname{TPR}^{\mathrm{clip}}_{d,a}
+\operatorname{TPR}^{u}_{d,a}
 -
 \operatorname{TPR}^{\mathrm{raw}}_{d,a}.
 $$
@@ -328,10 +347,12 @@ ordering used in the published RAID attack table.
 For each frozen reporting interval and detector, report:
 
 - raw TPR at calibrated 5% FPR;
-- universal-clipped TPR at calibrated 5% FPR;
+- full-universal-clipped TPR at calibrated 5% FPR;
+- eligible-universal-clipped TPR at calibrated 5% FPR;
 - rate-oracle-clipped TPR at its separately calibrated 5% FPR;
-- paired universal-minus-raw and rate-oracle-minus-raw TPR;
-- raw, universal-clipped, and rate-oracle-clipped AUROC as secondary diagnostics;
+- paired full-universal-minus-raw, eligible-universal-minus-raw, and
+  rate-oracle-minus-raw TPR;
+- raw, both universal-clipped, and rate-oracle-clipped AUROC as secondary diagnostics;
 - sample, source, attack, and generator/decoding counts.
 
 For every fitted interval bound, also report a trade-off table that applies the
@@ -343,7 +364,7 @@ bootstrap intervals. It does not fit attack-specific bounds.
 
 Because the correct rate interval is supplied from the clean/attacked pair,
 the rate-oracle is a diagnostic upper-bound analysis, not a directly deployable
-detector. Universal clipping remains the primary method.
+detector. The universal methods remain the primary deployable methods.
 
 ### Binoculars sanity check
 
@@ -357,7 +378,10 @@ sanity check.
 
 ## Paired source-cluster bootstrap
 
-Use 2,000 repetitions and a fixed bootstrap seed. Within each domain, resample
+The final confirmatory result uses 2,000 repetitions and a fixed bootstrap
+seed. The first unbounded diagnostic run may use 500 repetitions, but must be
+labeled `debug_only` and provisional; it is used to inspect full-data behavior
+before paying the additional evaluation cost. Within each domain, resample
 test `source_id` values with replacement. A sampled source carries its selected
 unattacked generation and all eleven attacks together. Use the same sampled
 source indices for raw and clipped scores so all differences remain paired.
@@ -438,11 +462,12 @@ A scientifically complete full run must satisfy all of the following:
    row, and eleven linked attack rows;
 5. expected row counts, stable unique keys, scorer revisions, and score schemas
    pass validation;
-6. all seven detectors have raw and universal-clipped results, plus four
-   fixed-bin rate-oracle specifications;
+6. all seven detectors have raw, full-universal-clipped, and
+   eligible-universal-clipped results, plus four fixed-bin rate-oracle
+   specifications;
 7. only 5%-FPR rows are present, with separate per-domain raw and clipped
    thresholds and held-out FPR;
-8. every final metric contains source counts and 2,000-repetition paired
+8. every confirmatory final metric contains source counts and 2,000-repetition paired
    bootstrap intervals;
 9. contamination summaries contain only the four fixed intervals through
    \(\rho=0.50\), fit no attack-specific rule, and record every sparse-bin
@@ -452,7 +477,9 @@ A scientifically complete full run must satisfy all of the following:
 11. raw Binoculars sanity output contains the RAID-published comparator values;
 12. stderr contains no traceback, CUDA failure, silent CPU/offload surprise,
     missing attack family, or truncation/schema mismatch;
-13. large data and score packs resolve below `/work/hdd` on Delta.
+13. all 500 recorded development sources are excluded before splitting, and
+    validation confirms zero overlap;
+14. large data and score packs resolve below `/work/hdd` on Delta.
 
 Smoke and bounded runs must be labeled `debug_only` and cannot be reported as
 scientific results.
@@ -494,25 +521,27 @@ its four eligible intervals and remains non-deployable because it requires the
 counterfactual clean/attacked pair to identify the interval.
 
 These comparisons contain no bootstrap confidence intervals and are explicitly
-labeled `PILOT_DEBUG_NOT_FOR_FINAL_REPORTING`. After inspection, exactly one
-universal selector, quantile grid, and clean-loss budget must be chosen and
-frozen before any full RAID run. Test outcomes from the eventual full run may
-not alter that choice.
+labeled `PILOT_DEBUG_NOT_FOR_FINAL_REPORTING`. The post-pilot decision freezes
+the original seven-quantile grid and the original objective in Equation
+\(J_d(c)\) for both full-universal and eligible-universal fitting. Exploratory
+cross-fitted TPR selectors, expanded quantile grids, clean-loss-budget searches,
+trimmed aggregation, and component-wise Binoculars clipping are not promoted to
+the final evaluator. Test outcomes from the unbounded run may not alter this
+choice.
 
 Because selector and budget choice will inspect pilot test outcomes, every
 source used by the 500-source pilot becomes development data. The comparison
-writes their IDs to `development_source_ids.json`. A future full benchmark must
+writes their IDs to `development_source_ids.json`. The full benchmark must
 exclude every one of those IDs before making its tuning/calibration/test split
-and must validate zero overlap. Until that exclusion path is implemented and
-tested, the full benchmark must not be launched. This preserves an independent
-final test while making the pilot a legitimate model-selection experiment.
+and must validate zero overlap. This preserves an independent final test while
+making the pilot a legitimate model-selection experiment.
 
 ## Exploratory one-sided trimmed aggregation
 
 The bounded pilot also tests a single alternative to clipping: remove a fixed
 fraction of the most adverse token evidence. For each additive detector, orient
 the local evidence so larger values are more machine-like, sort it as
-(z_{(1)}\leq\cdots\leq z_{(n)}), set (k=\lfloor\alpha n\rfloor), and use
+\(z_{(1)}\leq\cdots\leq z_{(n)}\), set \(k=\lfloor\alpha n\rfloor\), and use
 
 $$
 S_{\mathrm{trim},\alpha}
@@ -536,7 +565,7 @@ trimmed mean.
 
 Two universal fractions are learned per detector: full universal uses all 11
 attacked families at every realized rate; eligible universal uses only attacked
-rows with (0<\rho\leq0.50). Both use the original selection objective
+rows with \(0<\rho\leq0.50\). Both use the original selection objective
 
 $$
 0.8\,\operatorname{mean}_{a}\operatorname{AUROC}_{a}
@@ -546,7 +575,7 @@ $$
 with represented attacks equally weighted. Full-universal tuning requires all
 11 attacks; eligible-universal tuning omits attack families with no realized
 rows in its eligible interval. Exact ties retain the smaller fraction, so
-(\alpha=0) wins a tie. The untouched calibration humans separately calibrate
+\(\alpha=0\) wins a tie. The untouched calibration humans separately calibrate
 raw and trimmed per-domain thresholds to 5% FPR, and the pilot test split is
 reported by attack and fixed contamination-rate interval. AUROC is primary;
 TPR and held-out FPR are diagnostics because the 500-source calibration split
@@ -557,7 +586,7 @@ and record the same development source exclusions.
 ## Exploratory Binoculars component clipping
 
 The frozen Binoculars extension clips the combined oriented local gap
-(d(a_i-b_i)), where (a_i) is performer NLL and (b_i) is
+\(d(a_i-b_i)\), where \(a_i\) is performer NLL and \(b_i\) is
 observer-to-performer cross-entropy. A separate pilot ablation compares this
 with component-wise clipping:
 
@@ -577,16 +606,16 @@ $$
 
 Raw Binoculars is the first candidate. Gap clipping and component clipping each
 use the frozen seven-element quantile grid. For component clipping, the same
-quantile index determines (ell_a) and (ell_b) from their respective clean
+quantile index determines \(\ell_a\) and \(\ell_b\) from their respective clean
 tuning distributions. The experiment deliberately does not search all 49
 quantile pairs. Each family is fitted under full-universal and
-eligible-universal scopes with the original (0.8) mean-attack AUROC plus
-(0.2) clean AUROC objective. Exact ties retain raw; ties between two nonraw
+eligible-universal scopes with the original \(0.8\) mean-attack AUROC plus
+\(0.2\) clean AUROC objective. Exact ties retain raw; ties between two nonraw
 candidates retain the less aggressive bound.
 
 This analysis reuses the bounded pilot score packs, has no bootstrap, and is
 labeled `PILOT_DEBUG_NOT_FOR_FINAL_REPORTING`. Component clipping can disrupt
-the common-mode cancellation built into the raw difference (a_i-b_i), so it
+the common-mode cancellation built into the raw difference \(a_i-b_i\), so it
 is an ablation rather than a presumed improvement. It does not replace official
 raw Binoculars or the frozen gap-clipping protocol.
 

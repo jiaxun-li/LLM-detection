@@ -6,6 +6,7 @@ set -euo pipefail
 GPU_ACCOUNT="${GPU_ACCOUNT:-${ACCOUNT:-bhuc-delta-gpu}}"
 CPU_ACCOUNT="${CPU_ACCOUNT:-${GPU_ACCOUNT%-gpu}-cpu}"
 CPU_PARTITION="${CPU_PARTITION:-cpu}"
+CPU_GPUS_PER_NODE="${CPU_GPUS_PER_NODE:-0}"
 GPU_PARTITION="${GPU_PARTITION:-gpuA100x4}"
 NUM_SHARDS="${NUM_SHARDS:-4}"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -17,6 +18,7 @@ ADOPT_PREPARED_RUN_DIR="${ADOPT_PREPARED_RUN_DIR:-}"
 LIMIT_SOURCES="${LIMIT_SOURCES:-}"
 BOOTSTRAP_REPETITIONS="${BOOTSTRAP_REPETITIONS:-}"
 DEBUG_ONLY="${DEBUG_ONLY:-0}"
+EXCLUDE_SOURCE_IDS_PATH="${EXCLUDE_SOURCE_IDS_PATH:-}"
 
 if [[ ! -f "${RAID_DATA_PATH}" ]]; then
   echo "RAID data is missing: ${RAID_DATA_PATH}" >&2
@@ -27,12 +29,26 @@ for path in runs results; do
   case "$(readlink -f "${path}")" in /work/hdd/*) ;; *) exit 2 ;; esac
 done
 if [[ "${NUM_SHARDS}" -lt 1 ]]; then echo "NUM_SHARDS must be positive" >&2; exit 2; fi
+if [[ "${CPU_GPUS_PER_NODE}" -lt 0 ]]; then echo "CPU_GPUS_PER_NODE cannot be negative" >&2; exit 2; fi
 
 mkdir -p logs "${INDEX_CACHE_DIR}"
-EXPORTS="ALL,RAID_RUN_ID=${RAID_RUN_ID},RAID_DATA_PATH=${RAID_DATA_PATH},NUM_SHARDS=${NUM_SHARDS},INDEX_CACHE_DIR=${INDEX_CACHE_DIR},REUSE_INDEX_PATH=${REUSE_INDEX_PATH},ADOPT_PREPARED_RUN_DIR=${ADOPT_PREPARED_RUN_DIR},LIMIT_SOURCES=${LIMIT_SOURCES},BOOTSTRAP_REPETITIONS=${BOOTSTRAP_REPETITIONS},DEBUG_ONLY=${DEBUG_ONLY}"
+if [[ -n "${EXCLUDE_SOURCE_IDS_PATH}" && ! -s "${EXCLUDE_SOURCE_IDS_PATH}" ]]; then
+  echo "Source-exclusion file is missing or empty: ${EXCLUDE_SOURCE_IDS_PATH}" >&2
+  exit 2
+fi
+if [[ -z "${LIMIT_SOURCES}" && -z "${EXCLUDE_SOURCE_IDS_PATH}" ]]; then
+  echo "Unbounded RAID runs require EXCLUDE_SOURCE_IDS_PATH" >&2
+  exit 2
+fi
+EXPORTS="ALL,RAID_RUN_ID=${RAID_RUN_ID},RAID_DATA_PATH=${RAID_DATA_PATH},NUM_SHARDS=${NUM_SHARDS},INDEX_CACHE_DIR=${INDEX_CACHE_DIR},REUSE_INDEX_PATH=${REUSE_INDEX_PATH},ADOPT_PREPARED_RUN_DIR=${ADOPT_PREPARED_RUN_DIR},LIMIT_SOURCES=${LIMIT_SOURCES},BOOTSTRAP_REPETITIONS=${BOOTSTRAP_REPETITIONS},DEBUG_ONLY=${DEBUG_ONLY},EXCLUDE_SOURCE_IDS_PATH=${EXCLUDE_SOURCE_IDS_PATH}"
+CPU_GPU_ARGS=()
+if [[ "${CPU_GPUS_PER_NODE}" -gt 0 ]]; then
+  CPU_GPU_ARGS+=(--gpus-per-node="${CPU_GPUS_PER_NODE}")
+fi
 
 PREP_JOB_ID="$(sbatch --parsable \
   --account="${CPU_ACCOUNT}" --partition="${CPU_PARTITION}" \
+  "${CPU_GPU_ARGS[@]}" \
   --export="${EXPORTS}" RAID/delta_raid_prepare.sbatch)"
 
 ARRAY_RANGE="0-$((NUM_SHARDS - 1))"
@@ -48,6 +64,7 @@ BINOCULARS_JOB_ID="$(sbatch --parsable \
 
 FINALIZE_JOB_ID="$(sbatch --parsable \
   --account="${CPU_ACCOUNT}" --partition="${CPU_PARTITION}" \
+  "${CPU_GPU_ARGS[@]}" \
   --dependency="afterok:${FALCON_JOB_ID}:${BINOCULARS_JOB_ID}" \
   --export="${EXPORTS}" RAID/delta_raid_finalize.sbatch)"
 
@@ -56,6 +73,8 @@ STATE_FILE="/work/hdd/bhuc/${USER}/raid/last_workflow.env"
   printf 'export RAID_RUN_ID=%q\n' "${RAID_RUN_ID}"
   printf 'export RAID_DATA_PATH=%q\n' "${RAID_DATA_PATH}"
   printf 'export NUM_SHARDS=%q\n' "${NUM_SHARDS}"
+  printf 'export CPU_GPUS_PER_NODE=%q\n' "${CPU_GPUS_PER_NODE}"
+  printf 'export EXCLUDE_SOURCE_IDS_PATH=%q\n' "${EXCLUDE_SOURCE_IDS_PATH}"
   printf 'export ADOPT_PREPARED_RUN_DIR=%q\n' "${ADOPT_PREPARED_RUN_DIR}"
   printf 'export PREP_JOB_ID=%q\n' "${PREP_JOB_ID}"
   printf 'export FALCON_JOB_ID=%q\n' "${FALCON_JOB_ID}"

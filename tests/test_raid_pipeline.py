@@ -10,6 +10,7 @@ from RAID.raid_data import RAID_ADVERSARIAL_ATTACKS
 from RAID.raid_pipeline import (
     adopt_prepared_stage,
     evaluate_stage,
+    load_source_exclusion_ids,
     load_raid_config,
     merge_score_shards,
     plot_stage,
@@ -124,6 +125,31 @@ def _packs() -> tuple[list[dict], list[dict], list[dict]]:
 
 
 class RaidPipelineTests(unittest.TestCase):
+    def test_source_exclusion_file_requires_unique_nonempty_ids(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            valid = root / "valid.json"
+            valid.write_text(
+                json.dumps({"source_count": 2, "source_ids": ["s2", "s1"]}),
+                encoding="utf-8",
+            )
+            self.assertEqual(load_source_exclusion_ids(valid), {"s1", "s2"})
+
+            duplicate = root / "duplicate.json"
+            duplicate.write_text(
+                json.dumps({"source_ids": ["s1", "s1"]}), encoding="utf-8"
+            )
+            with self.assertRaisesRegex(ValueError, "duplicate"):
+                load_source_exclusion_ids(duplicate)
+
+            wrong_count = root / "wrong_count.json"
+            wrong_count.write_text(
+                json.dumps({"source_count": 3, "source_ids": ["s1", "s2"]}),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "source_count"):
+                load_source_exclusion_ids(wrong_count)
+
     def test_adopts_completed_preparation_with_exact_shard_validation(self):
         root = Path(__file__).resolve().parents[1]
         config = load_raid_config(root / "RAID" / "config.json")
@@ -255,7 +281,9 @@ class RaidPipelineTests(unittest.TestCase):
                 bootstrap_repetitions=0,
                 skip_binoculars=False,
             )
-            self.assertEqual(evaluation["evaluation_summary"]["universal_specs"], 7)
+            self.assertEqual(evaluation["evaluation_summary"]["universal_specs"], 14)
+            self.assertEqual(evaluation["evaluation_summary"]["full_universal_specs"], 7)
+            self.assertEqual(evaluation["evaluation_summary"]["eligible_universal_specs"], 7)
             self.assertEqual(evaluation["evaluation_summary"]["rate_adaptive_specs"], 28)
             try:
                 import matplotlib  # noqa: F401

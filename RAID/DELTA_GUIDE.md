@@ -114,24 +114,98 @@ ls logs/raid-binoculars-${BINOCULARS_JOB_ID}_*.err
 The dependency graph reports success only when
 `results/raid/$RAID_RUN_ID/validation_report.json` contains
 `validation_status: pass`. A smoke has 64
-sources, 832 prepared rows, four complete shards per scorer, seven detector
-universal specifications plus 28 fixed-bin rate-oracle specifications, only
+sources, 832 prepared rows, four complete shards per scorer, fourteen detector
+universal specifications (seven full and seven eligible) plus 28 fixed-bin
+rate-oracle specifications, only
 5% FPR, and 100 bootstrap repetitions. It remains
 `debug_only` and is not a scientific result.
 
-## 3. Full run
+## 3. Preserve artifacts and freeze the development exclusion
+
+Do not delete the RAID CSV, checksum-keyed index cache, 64-source smoke,
+500-source pilot, score packs, or pilot comparison results. A new run ID keeps
+the full-data artifacts separate. The only scientific cleaning step is to
+exclude the 500 pilot development sources before the final split.
+
+Locate and validate the canonical exclusion file:
+
+```bash
+cd ~/LLM-detection
+
+export PILOT_RESULTS_ROOT="$(readlink -f ~/LLM-detection-fast-smoke/results)"
+export EXCLUDE_SOURCE_IDS_PATH="$PILOT_RESULTS_ROOT/raid/raid-pilot-500-20260823T165957Z/tuning_comparison_v1/development_source_ids.json"
+
+python - "$EXCLUDE_SOURCE_IDS_PATH" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1]).resolve()
+payload = json.loads(path.read_text(encoding="utf-8"))
+source_ids = [str(value) for value in payload["source_ids"]]
+
+assert payload["must_be_excluded_from_future_full_benchmark"] is True
+assert payload["source_count"] == 500
+assert len(source_ids) == 500
+assert len(set(source_ids)) == 500
+
+print("exclusion_path:", path)
+print("source_count:", len(source_ids))
+print("sha256:", hashlib.sha256(path.read_bytes()).hexdigest())
+PY
+```
+
+Also verify storage without deleting anything:
+
+```bash
+readlink -f runs
+readlink -f results
+df -h /work/hdd/bhuc/$USER
+du -sh \
+  /work/hdd/bhuc/$USER/raid/train.csv \
+  /work/hdd/bhuc/$USER/raid/index-cache \
+  "$(readlink -f ~/LLM-detection-fast-smoke/runs)/raid/raid-pilot-500-20260823T165957Z" \
+  "$(readlink -f ~/LLM-detection-fast-smoke/results)/raid/raid-pilot-500-20260823T165957Z"
+```
+
+## 4. Provisional unbounded run with 500 bootstraps
 
 Do not explicitly reuse an interrupted run index for a full result. The first
 full preparation builds a checksum-keyed completed cache on the CPU partition;
 subsequent runs with the identical CSV reuse it automatically.
 
+This first unbounded pass uses every non-development source and all GPU scoring,
+but only 500 bootstrap repetitions. It is deliberately labeled `debug_only` and
+is provisional. If the full-data diagnostics are satisfactory, retain its
+scores. Before the frozen 2,000-repetition confirmatory evaluation, add and
+audit an evaluation-only promotion path under a new result ID so model
+inference is not repeated.
+
 ```bash
 cd ~/LLM-detection
-unset LIMIT_SOURCES BOOTSTRAP_REPETITIONS DEBUG_ONLY REUSE_INDEX_PATH
+unset LIMIT_SOURCES REUSE_INDEX_PATH ADOPT_PREPARED_RUN_DIR
+
+export GPU_ACCOUNT=bhuc-delta-gpu
+export GPU_PARTITION=gpuA100x4
+# This user currently has only a GPU-type allocation, so CPU phases use the
+# same account and partition. Delta therefore requires one reserved GPU for
+# prepare and finalize even though those phases perform CPU-only work.
+export CPU_ACCOUNT=bhuc-delta-gpu
+export CPU_PARTITION=gpuA100x4
+export CPU_GPUS_PER_NODE=1
+
 export NUM_SHARDS=4
 export RAID_DATA_PATH=/work/hdd/bhuc/$USER/raid/train.csv
 export INDEX_CACHE_DIR=/work/hdd/bhuc/$USER/raid/index-cache
-export RAID_RUN_ID="raid-constrained-rate-oracle-full-$(date -u +%Y%m%dT%H%M%SZ)"
+export BOOTSTRAP_REPETITIONS=500
+export DEBUG_ONLY=1
+export RAID_RUN_ID="raid-full-excluded500-bootstrap500-provisional-$(date -u +%Y%m%dT%H%M%SZ)"
+
+test -s "$RAID_DATA_PATH"
+test -s "$EXCLUDE_SOURCE_IDS_PATH"
+case "$(readlink -f runs)" in /work/hdd/*) ;; *) echo "runs is not on /work/hdd"; exit 2 ;; esac
+case "$(readlink -f results)" in /work/hdd/*) ;; *) echo "results is not on /work/hdd"; exit 2 ;; esac
 
 bash RAID/submit_raid.sh
 ```
@@ -139,9 +213,10 @@ bash RAID/submit_raid.sh
 Keep the same `RAID_RUN_ID`, shard count, input, and scientific configuration
 when resubmitting after a timeout. Individual shard score packs are append-safe.
 Never run multiple unsharded `run_raid.py --stage score` processes against one
-run directory.
+run directory. Do not reuse this provisional run ID with a different bootstrap
+count.
 
-## 4. Completion contract
+## 5. Completion contract
 
 Scientific completion requires all of the following:
 
@@ -149,12 +224,15 @@ Scientific completion requires all of the following:
 - merged Falcon and Binoculars keys exactly equal prepared keys;
 - model provenance is identical across each scorer's shards;
 - manifest reports all five logical stages complete;
-- all seven raw and universal-clipped detectors are present, together with the
-  four fixed-bin rate-oracle configurations per detector;
+- all seven raw, full-universal-clipped, and eligible-universal-clipped
+  detectors are present, together with the four fixed-bin rate-oracle
+  configurations per detector;
 - every rate-specific bound has paired `none`, attacked-bin, and represented-
   attack trade-off rows;
 - only the 5% FPR target is present;
-- 2,000 bootstrap repetitions use paired source-cluster resampling;
+- all 500 pilot-development sources are absent from preparation and every split;
+- 2,000 bootstrap repetitions use paired source-cluster resampling in the
+  confirmatory result; the initial 500-repetition run remains provisional;
 - contamination and truncation audits are complete;
 - `validation_report.json` reports `validation_status: pass`;
 - stderr contains no traceback, CUDA failure, or offload surprise.
@@ -162,7 +240,7 @@ Scientific completion requires all of the following:
 Retrieve the small `results/raid/<run-id>/` directory. Leave multi-gigabyte
 prepared data, caches, and score packs under `/work/hdd`.
 
-## 5. Evaluation-only tuning comparison on the bounded 500-source pilot
+## 6. Evaluation-only tuning comparison on the bounded 500-source pilot
 
 Do not resubmit preparation or either GPU scorer. After pulling the comparison
 code into the same checkout that contains the completed pilot score packs, run:
@@ -206,7 +284,7 @@ tail -n 100 "logs/raid-tuning-$TUNING_JOB_ID.err"
 cat "results/raid/$RAID_RUN_ID/tuning_comparison_v1/comparison.complete.json"
 ```
 
-## 6. Evaluation-only trimmed-mean comparison
+## 7. Evaluation-only trimmed-mean comparison
 
 This reuses the completed 500-source Falcon and Binoculars score packs. It does
 not repeat preparation, model loading, or inference:
@@ -236,7 +314,7 @@ cat "results/raid/$RAID_RUN_ID/$TRIM_OUTPUT_NAME/comparison.complete.json"
 column -s, -t < "results/raid/$RAID_RUN_ID/$TRIM_OUTPUT_NAME/summary.csv" | less -S
 ```
 
-## 7. Evaluation-only Binoculars component-clipping comparison
+## 8. Evaluation-only Binoculars component-clipping comparison
 
 Reuse the completed 500-source Falcon and Binoculars score packs:
 

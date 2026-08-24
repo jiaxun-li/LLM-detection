@@ -144,8 +144,13 @@ def candidate_specifications(d,direction,clean,quantiles=QUANTILE_GRID):
         return out+[{"nll_upper":float(np.quantile(a,q)),"log_rank_upper":float(np.quantile(b,z))} for q in quantiles for z in quantiles]
     a=np.concatenate([direction*local(r,d) for r in clean])
     return out+[{"lower":float(np.quantile(a,1-q))} for q in quantiles]
-def select_universal_specification(d,direction,h,clean,attacks,quantiles=QUANTILE_GRID):
-    if len(attacks)!=11 or any(not x for x in attacks.values()):raise ValueError("requires 11 nonempty attacks")
+def select_universal_specification(
+    d,direction,h,clean,attacks,quantiles=QUANTILE_GRID,require_all_attacks=True
+):
+    attacks={name:list(values) for name,values in attacks.items() if values}
+    if not attacks:raise ValueError("universal clipping requires represented attacks")
+    if require_all_attacks and len(attacks)!=11:
+        raise ValueError("full-universal clipping requires 11 nonempty attacks")
     best={}; best_j=-math.inf; diagnostics=[]
     for i,spec in enumerate(candidate_specifications(d,direction,list(h)+list(clean),quantiles)):
         hs=[oriented_document_score(r,d,direction,spec) for r in h]
@@ -316,6 +321,18 @@ def _add_rate_adaptive_pair(row,point,ci):
         if key.startswith("clipped_") or key.startswith("paired_"):
             name="rate_adaptive_"+key
             row[name+"_ci_low"]=lo;row[name+"_ci_high"]=hi
+
+def _add_named_clipped_pair(row,point,ci,name):
+    """Attach one raw-versus-clipped comparison under a distinct prefix."""
+    for key,value in point.items():
+        if key.startswith("clipped_"):
+            row[name+"_"+key]=value
+        elif key.startswith("paired_"):
+            row[name+"_"+key]=value
+    for key,(lo,hi) in ci.items():
+        if key.startswith("clipped_") or key.startswith("paired_"):
+            target=name+"_"+key
+            row[target+"_ci_low"]=lo;row[target+"_ci_high"]=hi
 def _validate(rows,expected=None):
     if not rows:raise ValueError("no RAID score rows")
     ss=defaultdict(set)
@@ -345,11 +362,13 @@ def _validate(rows,expected=None):
 def _tidy(analysis,wide):
     out=[]
     for r in wide:
-        aggregations=[("raw","raw","paired"),("clipped","clipped","paired")]
+        aggregations=[("raw","raw","paired"),("full_universal_clipped","clipped","paired")]
+        if "eligible_universal_clipped_tpr" in r:
+            aggregations.append(("eligible_universal_clipped","eligible_universal_clipped","eligible_universal_paired"))
         if "rate_adaptive_clipped_tpr" in r:
             aggregations.append(("rate_adaptive_clipped","rate_adaptive_clipped","rate_adaptive_paired"))
         for agg,prefix,pair_prefix in aggregations:
-            z={k:v for k,v in r.items() if not k.startswith(("raw_","clipped_","paired_","rate_adaptive_"))}
+            z={k:v for k,v in r.items() if not k.startswith(("raw_","clipped_","paired_","eligible_universal_","rate_adaptive_"))}
             z.update({"analysis":analysis,"aggregation":agg,"target_fpr":TARGET_FPR,
               "tpr":r[prefix+"_tpr"],"tpr_ci_low":r.get(prefix+"_tpr_ci_low"),"tpr_ci_high":r.get(prefix+"_tpr_ci_high"),
               "auroc":r[prefix+"_auroc"],"auroc_ci_low":r.get(prefix+"_auroc_ci_low"),"auroc_ci_high":r.get(prefix+"_auroc_ci_high"),
@@ -400,7 +419,15 @@ def evaluate_raid(falcon_rows,config=None,binoculars_rows=None,published_binocul
     if not math.isclose(clean_loss_budget,RATE_ADAPTIVE_CLEAN_AUROC_LOSS_BUDGET,abs_tol=1e-12):
         raise ValueError("rate-adaptive clean AUROC loss budget is frozen at 0.01")
     ta={x:_rows(rows,"clipping_tuning",False,x) for x in attacks}
-    frozen={"protocol":"raid_constrained_fixed_rate_oracle_v3","target_fpr":TARGET_FPR,"quantile_grid":list(QUANTILE_GRID),
+    eligible_ta={}
+    for name in attacks:
+        represented=[r for r in ta[name] if 0<rho(r)<=0.5]
+        if represented:eligible_ta[name]=represented
+    if not eligible_ta:raise ValueError("eligible-universal clipping has no represented attacks")
+    frozen={"protocol":"raid_full_and_eligible_universal_v4","target_fpr":TARGET_FPR,"quantile_grid":list(QUANTILE_GRID),
+      "universal_scopes":["full_universal","eligible_universal"],
+      "eligible_universal_interval":"0<rho<=0.5",
+      "eligible_universal_represented_attacks":sorted(eligible_ta),
       "contamination_cutpoints":cuts,"contamination_cutpoint_provenance":provenance,
       "rate_adaptive_eligible_interval":"0<rho<=0.5",
       "rate_adaptive_excluded_intervals":["rho=0","rho>0.5"],
@@ -413,12 +440,23 @@ def evaluate_raid(falcon_rows,config=None,binoculars_rows=None,published_binocul
     test_none=[r for r in testm if condition(r)=="none"]
     for d in DETECTORS:
         direction=learn_direction(d,th,tc);spec,diagnostics=select_universal_specification(d,direction,th,tc,ta)
-        thresholds,cs=_thresholds(cal,d,direction,spec,"universal");calibration_summary+=cs
+        eligible_spec,eligible_diagnostics=select_universal_specification(
+          d,direction,th,tc,eligible_ta,require_all_attacks=False)
+        thresholds,cs=_thresholds(cal,d,direction,spec,"full_universal");calibration_summary+=cs
+        eligible_thresholds,eligible_cs=_thresholds(
+          cal,d,direction,eligible_spec,"eligible_universal");calibration_summary+=eligible_cs
         selected=next(x for x in diagnostics if x["specification"]==spec)
+        eligible_selected=next(x for x in eligible_diagnostics if x["specification"]==eligible_spec)
         frozen["detectors"][d]={"direction":direction,"clipping_specification":spec,
           "selection_objective":selected["objective"],"candidate_diagnostics":diagnostics,
-          "classification_thresholds":thresholds,"rate_adaptive_bins":{}}
+          "classification_thresholds":thresholds,
+          "eligible_universal_clipping_specification":eligible_spec,
+          "eligible_universal_selection_objective":eligible_selected["objective"],
+          "eligible_universal_candidate_diagnostics":eligible_diagnostics,
+          "eligible_universal_classification_thresholds":eligible_thresholds,
+          "rate_adaptive_bins":{}}
         a,b=_cache(testh+testm,d,direction,spec)
+        _,eligible_b=_cache(testh+testm,d,direction,eligible_spec)
         for record in cs:
             domain_humans=[r for r in testh if domain(r)==record["domain"]]
             record["n_test_human"]=len(domain_humans)
@@ -426,12 +464,25 @@ def evaluate_raid(falcon_rows,config=None,binoculars_rows=None,published_binocul
               [a[id(r)] for r in domain_humans],record["raw_threshold"])
             record["clipped_test_fpr"]=actual_fpr(
               [b[id(r)] for r in domain_humans],record["clipped_threshold"])
+        for record in eligible_cs:
+            domain_humans=[r for r in testh if domain(r)==record["domain"]]
+            record["n_test_human"]=len(domain_humans)
+            record["raw_test_fpr"]=actual_fpr(
+              [a[id(r)] for r in domain_humans],record["raw_threshold"])
+            record["clipped_test_fpr"]=actual_fpr(
+              [eligible_b[id(r)] for r in domain_humans],record["clipped_threshold"])
         for cond in ["none"]+attacks:
             mr=[r for r in testm if condition(r)==cond]
             z={"detector":d,"condition":cond,"target_fpr":TARGET_FPR,"n_test_human":len(testh),
                "n_test_machine":len(mr),"n_test_sources":len({source(r) for r in mr}),
-               "clipping_specification":json.dumps(spec,sort_keys=True),**_point(testh,mr,a,b,thresholds)}
+               "clipping_specification":json.dumps(spec,sort_keys=True),
+               "eligible_universal_clipping_specification":json.dumps(eligible_spec,sort_keys=True),
+               **_point(testh,mr,a,b,thresholds)}
             _add_ci(z,_bootstrap(testh,mr,a,b,thresholds,reps,_seed(bseed,d,"attack",cond)));attack_summary.append(z)
+            eligible_point=_point(testh,mr,a,eligible_b,eligible_thresholds)
+            eligible_ci=_bootstrap(testh,mr,a,eligible_b,eligible_thresholds,
+              reps,_seed(bseed,d,"attack_eligible",cond))
+            _add_named_clipped_pair(z,eligible_point,eligible_ci,"eligible_universal")
         tuning_bins=defaultdict(list);test_bins=defaultdict(list)
         for r in tune:
             if not human(r) and condition(r)!="none":
@@ -480,10 +531,16 @@ def evaluate_raid(falcon_rows,config=None,binoculars_rows=None,published_binocul
               "decoding_composition":json.dumps(Counter(str(_first(r,("decoding_method","decoding"),"unknown")) for r in mr),sort_keys=True),
               "repetition_penalty_composition":json.dumps(Counter(str(_first(r,("repetition_penalty",),"unknown")) for r in mr),sort_keys=True),
               "clipping_specification":json.dumps(spec,sort_keys=True),
+              "eligible_universal_clipping_specification":json.dumps(eligible_spec,sort_keys=True),
               "rate_adaptive_clipping_specification":json.dumps(adaptive_spec,sort_keys=True),
               "rate_adaptive_fallback_to_universal":adaptive_meta["fallback_to_universal"],
               **_point(testh,mr,a,b,thresholds)}
             _add_ci(z,_bootstrap(testh,mr,a,b,thresholds,reps,_seed(bseed,d,"rho",i)))
+            eligible_point=_point(testh,mr,a,eligible_b,eligible_thresholds)
+            eligible_ci=_bootstrap(testh,mr,a,eligible_b,eligible_thresholds,
+              reps,_seed(bseed,d,"rho_eligible",i))
+            _add_named_clipped_pair(
+              z,eligible_point,eligible_ci,"eligible_universal")
             adaptive_point=_point(testh,mr,adaptive_raw,adaptive_clipped,adaptive_thresholds)
             adaptive_ci=_bootstrap(testh,mr,adaptive_raw,adaptive_clipped,adaptive_thresholds,
               reps,_seed(bseed,d,"rho_adaptive",i))
@@ -524,7 +581,8 @@ def evaluate_raid(falcon_rows,config=None,binoculars_rows=None,published_binocul
     counts.update({"attack_summary_rows":len(attack_summary),"contamination_summary_rows":len(contamination_summary),
       "rate_bound_tradeoff_rows":len(rate_bound_tradeoff_summary),
       "metrics_rows":len(metrics),"calibration_rows":len(calibration_summary),"binoculars_sanity_rows":len(sanity),
-      "bootstrap_repetitions":reps,"contamination_cutpoints":cuts,"universal_specs":7,
+      "bootstrap_repetitions":reps,"contamination_cutpoints":cuts,"universal_specs":14,
+      "full_universal_specs":7,"eligible_universal_specs":7,
       "rate_adaptive_specs":len(DETECTORS)*len(RATE_ADAPTIVE_BIN_INDICES),
       "rate_adaptive_fallback_specs":fallback_specs,"attack_specific_specs":0,
       "contamination_record_rows":len(contamination_records)})

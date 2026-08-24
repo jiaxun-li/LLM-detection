@@ -144,12 +144,24 @@ class RaidEvaluationTests(unittest.TestCase):
         self.assertEqual(first.metrics,second.metrics)
         self.assertEqual(set(first.frozen_specs["detectors"]),set(DETECTORS))
         self.assertTrue(first.frozen_specs["rate_adaptive_clipping"])
+        self.assertEqual(first.frozen_specs["universal_scopes"],
+                         ["full_universal", "eligible_universal"])
+        self.assertNotIn(
+            "zero_width_space",
+            first.frozen_specs["eligible_universal_represented_attacks"],
+        )
+        self.assertEqual(first.validation_counts["full_universal_specs"],7)
+        self.assertEqual(first.validation_counts["eligible_universal_specs"],7)
         self.assertEqual(first.validation_counts["rate_adaptive_specs"],28)
         self.assertEqual(first.validation_counts["attack_specific_specs"],0)
         self.assertEqual(len(first.attack_summary),7*12)
         self.assertEqual({r["target_fpr"] for r in first.metrics},{.05})
-        self.assertEqual({r["aggregation"] for r in first.metrics},{"raw","clipped","rate_adaptive_clipped"})
+        self.assertEqual(
+            {r["aggregation"] for r in first.metrics},
+            {"raw","full_universal_clipped","eligible_universal_clipped","rate_adaptive_clipped"},
+        )
         self.assertTrue(all("paired_tpr_difference_ci_low" in r for r in first.attack_summary))
+        self.assertTrue(all("eligible_universal_paired_tpr_difference_ci_low" in r for r in first.attack_summary))
         self.assertEqual(len(first.binoculars_sanity),7)
         self.assertEqual(first.contamination_cutpoints,list(RATE_ADAPTIVE_CUTPOINTS))
         self.assertEqual(len(first.contamination_summary),7*4)
@@ -180,6 +192,9 @@ class RaidEvaluationTests(unittest.TestCase):
             specs={r["clipping_specification"] for r in first.attack_summary if r["detector"]==detector}
             specs|={r["clipping_specification"] for r in first.contamination_summary if r["detector"]==detector}
             self.assertEqual(len(specs),1)
+            eligible_specs={r["eligible_universal_clipping_specification"] for r in first.attack_summary if r["detector"]==detector}
+            eligible_specs|={r["eligible_universal_clipping_specification"] for r in first.contamination_summary if r["detector"]==detector}
+            self.assertEqual(len(eligible_specs),1)
         with tempfile.TemporaryDirectory() as tmp:
             paths=write_evaluation_artifacts(first,tmp)
             self.assertEqual(set(paths),{"frozen_specs","metrics","attack_summary","contamination_summary","rate_bound_tradeoff_summary","binoculars_sanity","calibration_summary","contamination_records","validation_counts"})

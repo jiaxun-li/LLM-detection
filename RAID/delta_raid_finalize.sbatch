@@ -15,6 +15,7 @@ NUM_SHARDS="${NUM_SHARDS:-4}"
 LIMIT_SOURCES="${LIMIT_SOURCES:-}"
 BOOTSTRAP_REPETITIONS="${BOOTSTRAP_REPETITIONS:-}"
 DEBUG_ONLY="${DEBUG_ONLY:-0}"
+EXCLUDE_SOURCE_IDS_PATH="${EXCLUDE_SOURCE_IDS_PATH:-}"
 VENV_PATH="${VENV_PATH:-/projects/bhuc/${USER}/venvs/delta-smoke}"
 module reset
 module load miniforge3-python
@@ -23,6 +24,7 @@ source "${VENV_PATH}/bin/activate"
 ARGS=(--run-id "${RAID_RUN_ID}" --stage all --num-shards "${NUM_SHARDS}")
 if [[ -n "${LIMIT_SOURCES}" ]]; then ARGS+=(--limit-sources "${LIMIT_SOURCES}"); fi
 if [[ -n "${BOOTSTRAP_REPETITIONS}" ]]; then ARGS+=(--bootstrap-repetitions "${BOOTSTRAP_REPETITIONS}"); fi
+if [[ -n "${EXCLUDE_SOURCE_IDS_PATH}" ]]; then ARGS+=(--exclude-source-ids-path "${EXCLUDE_SOURCE_IDS_PATH}"); fi
 if [[ "${DEBUG_ONLY}" == "1" ]]; then ARGS+=(--debug-only); fi
 python -u RAID/run_raid.py "${ARGS[@]}"
 echo "RAID FINALIZE: PASS"

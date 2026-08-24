@@ -20,6 +20,7 @@ ADOPT_PREPARED_RUN_DIR="${ADOPT_PREPARED_RUN_DIR:-}"
 LIMIT_SOURCES="${LIMIT_SOURCES:-}"
 BOOTSTRAP_REPETITIONS="${BOOTSTRAP_REPETITIONS:-}"
 DEBUG_ONLY="${DEBUG_ONLY:-0}"
+EXCLUDE_SOURCE_IDS_PATH="${EXCLUDE_SOURCE_IDS_PATH:-}"
 VENV_PATH="${VENV_PATH:-/projects/bhuc/${USER}/venvs/delta-smoke}"
 
 module reset
@@ -40,6 +41,7 @@ else
 fi
 if [[ -n "${LIMIT_SOURCES}" ]]; then ARGS+=(--limit-sources "${LIMIT_SOURCES}"); fi
 if [[ -n "${BOOTSTRAP_REPETITIONS}" ]]; then ARGS+=(--bootstrap-repetitions "${BOOTSTRAP_REPETITIONS}"); fi
+if [[ -n "${EXCLUDE_SOURCE_IDS_PATH}" ]]; then ARGS+=(--exclude-source-ids-path "${EXCLUDE_SOURCE_IDS_PATH}"); fi
 if [[ "${DEBUG_ONLY}" == "1" ]]; then ARGS+=(--debug-only); fi
 
 python -u RAID/run_raid.py "${ARGS[@]}"

@@ -1,5 +1,5 @@
 {
-  "protocol_name": "raid-constrained-fixed-rate-oracle-v3",
+  "protocol_name": "raid-full-eligible-and-rate-oracle-v4",
   "result_label": "RAID_EXTERNAL_BENCHMARK",
   "dataset": {
     "loader": "raid_bench",
@@ -26,6 +26,7 @@
   "selection": {
     "selection_seed": 260823,
     "split_seed": 260824,
+    "required_development_source_exclusions": 500,
     "split_fractions": {
       "clipping_tuning": 0.4,
       "calibration": 0.2,

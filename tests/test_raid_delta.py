@@ -20,6 +20,9 @@ class RaidDeltaContractTests(unittest.TestCase):
         self.assertEqual(config["evaluation"]["bootstrap_repetitions"], 2000)
         self.assertEqual(config["evaluation"]["attack_weight"], 0.8)
         self.assertEqual(config["evaluation"]["clean_weight"], 0.2)
+        self.assertEqual(
+            config["selection"]["required_development_source_exclusions"], 500
+        )
         self.assertEqual(config["models"]["falcon"]["id"], "tiiuae/falcon-7b")
         self.assertEqual(config["models"]["binoculars"]["observer"], "tiiuae/falcon-7b")
         self.assertEqual(
@@ -70,6 +73,9 @@ class RaidDeltaContractTests(unittest.TestCase):
         self.assertIn('--account="${CPU_ACCOUNT}"', submit)
         self.assertIn("last_workflow.env", submit)
         self.assertIn("ADOPT_PREPARED_RUN_DIR", submit)
+        self.assertIn("EXCLUDE_SOURCE_IDS_PATH", submit)
+        self.assertIn("CPU_GPUS_PER_NODE", submit)
+        self.assertIn('CPU_GPU_ARGS+=(--gpus-per-node=', submit)
 
     def test_delta_guide_requires_smoke_validation_before_full_run(self):
         guide = (ROOT / "RAID" / "DELTA_GUIDE.md").read_text(encoding="utf-8")
@@ -80,6 +86,9 @@ class RaidDeltaContractTests(unittest.TestCase):
         self.assertIn("2,000 bootstrap", guide)
         self.assertIn("NUM_SHARDS=4", guide)
         self.assertIn("CPU-only preparation", guide)
+        self.assertIn("BOOTSTRAP_REPETITIONS=500", guide)
+        self.assertIn("EXCLUDE_SOURCE_IDS_PATH", guide)
+        self.assertIn("CPU_GPUS_PER_NODE=1", guide)
 
     def test_tuning_comparison_wrapper_reuses_scores_with_one_reserved_gpu(self):
         wrapper = (
