@@ -35,3 +35,9 @@ tests one-sided token trimming at fractions 0, 0.5%, 1%, 2.5%, 5%, 10%, and
 20% under full-universal and eligible-universal fitting. It reuses the same
 score packs and writes only below
 `results/raid/<run-id>/trimmed_mean_comparison_v1/`.
+
+`compare_binoculars_components.py` is a Binoculars-only pilot ablation. It
+compares the existing local-gap clipping rule with clipping the oriented
+performer-NLL and cross-entropy components separately. The two component bounds
+share one quantile index, avoiding a post-pilot 49-pair search. It writes below
+`results/raid/<run-id>/binoculars_component_comparison_v1/`.

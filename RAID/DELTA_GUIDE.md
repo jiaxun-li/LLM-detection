@@ -235,3 +235,33 @@ tail -n 100 "logs/raid-trim-$TRIM_JOB_ID.err"
 cat "results/raid/$RAID_RUN_ID/$TRIM_OUTPUT_NAME/comparison.complete.json"
 column -s, -t < "results/raid/$RAID_RUN_ID/$TRIM_OUTPUT_NAME/summary.csv" | less -S
 ```
+
+## 7. Evaluation-only Binoculars component-clipping comparison
+
+Reuse the completed 500-source Falcon and Binoculars score packs:
+
+```bash
+cd ~/LLM-detection-fast-smoke
+export RAID_RUN_ID=raid-pilot-500-20260823T165957Z
+export BINO_COMPONENT_OUTPUT_NAME=binoculars_component_comparison_v1
+
+BINO_COMPONENT_JOB_ID="$(sbatch --parsable \
+  --account=bhuc-delta-gpu \
+  RAID/delta_raid_binoculars_components.sbatch)"
+echo "BINO_COMPONENT_JOB_ID=$BINO_COMPONENT_JOB_ID"
+```
+
+The job performs no inference and downloads no models. One A100 is reserved
+only because the available project account is GPU-type. Results are written
+under `results/raid/<run-id>/binoculars_component_comparison_v1/`.
+
+Check completion with:
+
+```bash
+sacct -j "$BINO_COMPONENT_JOB_ID" \
+  --format=JobID,JobName,State,Elapsed,MaxRSS,ExitCode
+tail -n 100 "logs/raid-bino-cmp-$BINO_COMPONENT_JOB_ID.err"
+cat "results/raid/$RAID_RUN_ID/$BINO_COMPONENT_OUTPUT_NAME/comparison.complete.json"
+column -s, -t < \
+  "results/raid/$RAID_RUN_ID/$BINO_COMPONENT_OUTPUT_NAME/summary.csv" | less -S
+```

@@ -27,6 +27,11 @@ from RAID.compare_trimmed_mean import (
     trimmed_document_score,
     write_trimmed_mean_artifacts,
 )
+from RAID.compare_binoculars_components import (
+    compare_binoculars_components,
+    componentwise_binoculars_score,
+    write_component_artifacts,
+)
 
 ATTACKS = [
     "alternative_spelling", "article_deletion", "homoglyph", "insert_paragraphs",
@@ -342,6 +347,85 @@ class RaidEvaluationTests(unittest.TestCase):
             )
             self.assertEqual(complete["status"], "complete")
             self.assertEqual(complete["selected_trimming_rows"], 14)
+
+    def test_componentwise_binoculars_clips_both_oriented_terms(self):
+        record = row("s-0", "test", "machine")
+        record["token_features"]["performer_nll"] = [0.0, 10.0]
+        record["token_features"][
+            "observer_to_performer_cross_entropy"
+        ] = [0.0, 1.0]
+        raw = oriented_document_score(record, "binoculars", 1)
+        self.assertEqual(componentwise_binoculars_score(record, 1, {}), raw)
+        clipped = componentwise_binoculars_score(
+            record,
+            1,
+            {
+                "performer_oriented_lower": 2.0,
+                "cross_oriented_lower": -0.5,
+            },
+        )
+        self.assertAlmostEqual(clipped, np.exp(5.75))
+
+    def test_binoculars_component_comparison_is_isolated_and_complete(self):
+        rows = protocol_rows()
+        falcon = []
+        binoculars = []
+        for record in rows:
+            falcon.append(
+                {
+                    **record,
+                    "token_features": {
+                        name: value
+                        for name, value in record["token_features"].items()
+                        if name
+                        not in (
+                            "performer_nll",
+                            "observer_to_performer_cross_entropy",
+                        )
+                    },
+                }
+            )
+            binoculars.append(
+                {
+                    **record,
+                    "token_features": {
+                        name: value
+                        for name, value in record["token_features"].items()
+                        if name
+                        in (
+                            "performer_nll",
+                            "observer_to_performer_cross_entropy",
+                        )
+                    },
+                }
+            )
+        result = compare_binoculars_components(
+            falcon,
+            binoculars,
+            expected_attacks=ATTACKS,
+            quantiles=(0.8, 0.95),
+        )
+        self.assertEqual(result["manifest"]["method_count"], 4)
+        self.assertEqual(result["manifest"]["component_search"],
+                         "one_shared_quantile_index_not_7x7")
+        self.assertEqual(len(result["selected_specs"]), 4)
+        self.assertEqual(len(result["candidate_diagnostics"]), 2 * 2 * 3)
+        self.assertEqual(len(result["attack_results"]), 4 * 12)
+        self.assertEqual(len(result["summary"]), 4)
+        self.assertEqual(
+            {row["family"] for row in result["selected_specs"]},
+            {"gap_clipping", "component_clipping"},
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = write_component_artifacts(result, temporary)
+            self.assertEqual(len(paths), 7)
+            complete = json.loads(
+                (Path(temporary) / "comparison.complete.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(complete["status"], "complete")
+            self.assertEqual(complete["selected_spec_rows"], 4)
 
 if __name__=="__main__":
     unittest.main()

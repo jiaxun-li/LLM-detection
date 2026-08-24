@@ -554,6 +554,42 @@ is small. There is no bootstrap. Outputs are labeled
 `PILOT_DEBUG_NOT_FOR_FINAL_REPORTING`, do not replace frozen clipping results,
 and record the same development source exclusions.
 
+## Exploratory Binoculars component clipping
+
+The frozen Binoculars extension clips the combined oriented local gap
+(d(a_i-b_i)), where (a_i) is performer NLL and (b_i) is
+observer-to-performer cross-entropy. A separate pilot ablation compares this
+with component-wise clipping:
+
+$$
+\widetilde z_i
+=
+\max\{d a_i,\ell_a\}
++
+\max\{-d b_i,\ell_b\}.
+$$
+
+The oriented document score remains
+
+$$
+d\exp\!\left(d\,\frac{1}{n}\sum_i\widetilde z_i\right).
+$$
+
+Raw Binoculars is the first candidate. Gap clipping and component clipping each
+use the frozen seven-element quantile grid. For component clipping, the same
+quantile index determines (ell_a) and (ell_b) from their respective clean
+tuning distributions. The experiment deliberately does not search all 49
+quantile pairs. Each family is fitted under full-universal and
+eligible-universal scopes with the original (0.8) mean-attack AUROC plus
+(0.2) clean AUROC objective. Exact ties retain raw; ties between two nonraw
+candidates retain the less aggressive bound.
+
+This analysis reuses the bounded pilot score packs, has no bootstrap, and is
+labeled `PILOT_DEBUG_NOT_FOR_FINAL_REPORTING`. Component clipping can disrupt
+the common-mode cancellation built into the raw difference (a_i-b_i), so it
+is an ablation rather than a presumed improvement. It does not replace official
+raw Binoculars or the frozen gap-clipping protocol.
+
 ## Delta execution contract
 
 The Delta orchestrator is `RAID/submit_raid.sh`. It submits a CPU preparation

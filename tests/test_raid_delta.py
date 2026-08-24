@@ -105,6 +105,18 @@ class RaidDeltaContractTests(unittest.TestCase):
         self.assertNotIn("run_raid.py --stage score", wrapper)
         self.assertIn("comparison.complete.json", wrapper)
 
+    def test_binoculars_component_wrapper_reuses_existing_score_packs(self):
+        wrapper = (
+            ROOT / "RAID" / "delta_raid_binoculars_components.sbatch"
+        ).read_text(encoding="utf-8")
+        self.assertIn("#SBATCH --gpus-per-node=1", wrapper)
+        self.assertIn("#SBATCH --mem=120G", wrapper)
+        self.assertIn("RAID/compare_binoculars_components.py", wrapper)
+        self.assertIn("falcon_scores.jsonl", wrapper)
+        self.assertIn("binoculars_scores.jsonl", wrapper)
+        self.assertNotIn("run_raid.py --stage score", wrapper)
+        self.assertIn("comparison.complete.json", wrapper)
+
 
 if __name__ == "__main__":
     unittest.main()
