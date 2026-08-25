@@ -102,6 +102,23 @@ class RaidDeltaContractTests(unittest.TestCase):
         self.assertNotIn("run_raid.py --stage score", wrapper)
         self.assertIn("comparison.complete.json", wrapper)
 
+    def test_bootstrap_promotion_reuses_scores_without_inference(self):
+        wrapper = (
+            ROOT / "RAID" / "delta_raid_bootstrap_promotion.sbatch"
+        ).read_text(encoding="utf-8")
+        script = (ROOT / "RAID" / "promote_bootstrap.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("#SBATCH --gpus-per-node=1", wrapper)
+        self.assertIn("#SBATCH --mem=240G", wrapper)
+        self.assertIn("--bootstrap-repetitions 2000", wrapper)
+        self.assertIn("RAID/promote_bootstrap.py", wrapper)
+        self.assertNotIn("run_raid.py --stage score", wrapper)
+        self.assertNotIn("RAIDFalconScorer", script)
+        self.assertNotIn("RAIDBinocularsScorer", script)
+        self.assertIn("promote_bootstrap_evaluation", script)
+        self.assertIn("_assert_point_estimates_unchanged", script)
+
     def test_trimmed_mean_wrapper_reuses_scores_with_one_reserved_gpu(self):
         wrapper = (
             ROOT / "RAID" / "delta_raid_trimmed_mean.sbatch"

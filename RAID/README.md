@@ -22,6 +22,13 @@ multiple copies of `run_raid.py --stage score` against one run directory.
 Bounded checks must use `--limit-sources` and remain `debug_only`. Full results
 must pass `RAID/validate_raid.py`; a Slurm `COMPLETED` state alone is not enough.
 
+`promote_bootstrap.py` is the only supported path for turning the audited
+unbounded 500-bootstrap diagnostic into the frozen 2,000-bootstrap result. It
+creates a new result ID, reuses the completed run's immutable prepared and
+score packs, reruns only evaluation/plotting/validation, and records source
+artifact provenance in `promotion_manifest.json`. The Delta wrapper is
+`delta_raid_bootstrap_promotion.sbatch`; it performs no model inference.
+
 The frozen evaluator reports raw, full-universal clipped, and
 eligible-universal clipped results for all seven detectors. It retains the four
 fixed contamination-rate bounds as a secondary oracle analysis. Every

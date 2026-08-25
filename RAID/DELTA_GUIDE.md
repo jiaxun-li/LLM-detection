@@ -240,7 +240,131 @@ Scientific completion requires all of the following:
 Retrieve the small `results/raid/<run-id>/` directory. Leave multi-gigabyte
 prepared data, caches, and score packs under `/work/hdd`.
 
-## 6. Evaluation-only tuning comparison on the bounded 500-source pilot
+## 6. Export the accepted provisional results for local analysis
+
+Archive only the result directory. For the accepted labeled-release run this is
+about 51 MB before compression; its 23 GB run/score directory must remain on
+Delta.
+
+```bash
+cd ~/LLM-detection
+
+export RAID_SOURCE_RUN_ID=raid-full-excluded500-bootstrap500-provisional-20260824T132810Z
+export RAID_EXPORT_ROOT=/work/hdd/bhuc/$USER/raid/result-exports
+export RAID_RESULTS_ROOT="$(readlink -f results)"
+export RAID_RUNS_ROOT="$(readlink -f runs)"
+
+test -s "$RAID_RESULTS_ROOT/raid/$RAID_SOURCE_RUN_ID/validation_report.json"
+test -s "$RAID_RUNS_ROOT/raid/$RAID_SOURCE_RUN_ID/manifest.json"
+mkdir -p "$RAID_EXPORT_ROOT"
+cp "$RAID_RUNS_ROOT/raid/$RAID_SOURCE_RUN_ID/manifest.json" \
+  "$RAID_EXPORT_ROOT/$RAID_SOURCE_RUN_ID-source-manifest.json"
+cp "$RAID_RUNS_ROOT/raid/$RAID_SOURCE_RUN_ID/prepare.complete.json" \
+  "$RAID_EXPORT_ROOT/$RAID_SOURCE_RUN_ID-prepare.complete.json"
+cp "$RAID_RUNS_ROOT/raid/$RAID_SOURCE_RUN_ID/score.complete.json" \
+  "$RAID_EXPORT_ROOT/$RAID_SOURCE_RUN_ID-score.complete.json"
+tar -czf \
+  "$RAID_EXPORT_ROOT/$RAID_SOURCE_RUN_ID-results.tar.gz" \
+  -C "$RAID_RESULTS_ROOT/raid" "$RAID_SOURCE_RUN_ID" \
+  -C "$RAID_EXPORT_ROOT" \
+  "$RAID_SOURCE_RUN_ID-source-manifest.json" \
+  "$RAID_SOURCE_RUN_ID-prepare.complete.json" \
+  "$RAID_SOURCE_RUN_ID-score.complete.json"
+sha256sum "$RAID_EXPORT_ROOT/$RAID_SOURCE_RUN_ID-results.tar.gz" | tee \
+  "$RAID_EXPORT_ROOT/$RAID_SOURCE_RUN_ID-results.tar.gz.sha256"
+ls -lh "$RAID_EXPORT_ROOT/$RAID_SOURCE_RUN_ID-results.tar.gz"*
+```
+
+Copy the archive and checksum from a Windows PowerShell terminal. If a local
+SSH alias is configured for Delta, it may replace the hostname below.
+
+```powershell
+$RunId = 'raid-full-excluded500-bootstrap500-provisional-20260824T132810Z'
+$Destination = 'E:\Research\LLM detection\downloads\RAID'
+New-Item -ItemType Directory -Force $Destination | Out-Null
+
+scp "jli101@dt-login.delta.ncsa.illinois.edu:/work/hdd/bhuc/jli101/raid/result-exports/$RunId-results.tar.gz" "$Destination\"
+scp "jli101@dt-login.delta.ncsa.illinois.edu:/work/hdd/bhuc/jli101/raid/result-exports/$RunId-results.tar.gz.sha256" "$Destination\"
+Get-FileHash "$Destination\$RunId-results.tar.gz" -Algorithm SHA256
+tar -xzf "$Destination\$RunId-results.tar.gz" -C $Destination
+```
+
+Compare the PowerShell hash with the value in the downloaded `.sha256` file.
+The repository ignores `/downloads`, so this analysis copy will not enter Git.
+
+## 7. Promote the accepted run to 2,000 bootstraps
+
+After the promotion code has been committed by the user, pushed from Windows,
+and pulled on Delta, submit one evaluation-only job. This job reuses the
+167,323-row Falcon and Binoculars score packs and performs no inference.
+
+```bash
+cd ~/LLM-detection
+
+export RAID_SOURCE_RUN_ID=raid-full-excluded500-bootstrap500-provisional-20260824T132810Z
+export RAID_PROMOTION_ID="raid-full-excluded500-bootstrap2000-final-$(date -u +%Y%m%dT%H%M%SZ)"
+
+case "$(readlink -f runs)" in /work/hdd/*) ;; *) echo "runs is not on /work/hdd"; exit 2 ;; esac
+case "$(readlink -f results)" in /work/hdd/*) ;; *) echo "results is not on /work/hdd"; exit 2 ;; esac
+test -s "runs/raid/$RAID_SOURCE_RUN_ID/falcon_scores.jsonl"
+test -s "runs/raid/$RAID_SOURCE_RUN_ID/binoculars_scores.jsonl"
+
+BOOTSTRAP_JOB_ID="$(sbatch --parsable \
+  --account=bhuc-delta-gpu \
+  --export=ALL,RAID_SOURCE_RUN_ID="$RAID_SOURCE_RUN_ID",RAID_PROMOTION_ID="$RAID_PROMOTION_ID" \
+  RAID/delta_raid_bootstrap_promotion.sbatch)"
+
+mkdir -p /work/hdd/bhuc/$USER/raid
+{
+  printf 'export RAID_SOURCE_RUN_ID=%q\n' "$RAID_SOURCE_RUN_ID"
+  printf 'export RAID_PROMOTION_ID=%q\n' "$RAID_PROMOTION_ID"
+  printf 'export BOOTSTRAP_JOB_ID=%q\n' "$BOOTSTRAP_JOB_ID"
+} > /work/hdd/bhuc/$USER/raid/last_bootstrap_promotion.env
+
+echo "BOOTSTRAP_JOB_ID=$BOOTSTRAP_JOB_ID"
+echo "RAID_PROMOTION_ID=$RAID_PROMOTION_ID"
+```
+
+The prior 500-bootstrap finalize took about 33 minutes. Because the bootstrap
+loops are serial, budget roughly 2--3 hours for 2,000 repetitions; the wrapper
+allows eight hours. Queue time is additional. Reuse the same promotion ID if
+the job is interrupted; never reuse the provisional run ID with a new count.
+
+After reconnecting, check both Slurm and scientific completion:
+
+```bash
+cd ~/LLM-detection
+source /work/hdd/bhuc/$USER/raid/last_bootstrap_promotion.env
+
+sacct -j "$BOOTSTRAP_JOB_ID" \
+  --format=JobID,JobName,State,Elapsed,MaxRSS,ExitCode
+tail -n 100 "logs/raid-boot2000-$BOOTSTRAP_JOB_ID.err"
+
+python - "$RAID_PROMOTION_ID" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+promotion_id = sys.argv[1]
+root = Path("results/raid") / promotion_id
+manifest = json.loads((root / "promotion_manifest.json").read_text())
+report = json.loads((root / "validation_report.json").read_text())
+marker = json.loads((root / "promotion.complete.json").read_text())
+
+print("source_run_id:", manifest["source_run_id"])
+print("completion_status:", manifest["completion_status"])
+print("completed_stages:", manifest["completed_stages"])
+print("bootstrap_repetitions:", report["bootstrap_repetitions"])
+print("validation_status:", report["validation_status"])
+print("completion_marker:", marker)
+PY
+```
+
+Expected values are `complete`, `['evaluate', 'plot', 'validate']`, `2000`, and
+`pass`. Download this final result directory with the same archive procedure
+used above, substituting `RAID_PROMOTION_ID` for `RAID_SOURCE_RUN_ID`.
+
+## 8. Evaluation-only tuning comparison on the bounded 500-source pilot
 
 Do not resubmit preparation or either GPU scorer. After pulling the comparison
 code into the same checkout that contains the completed pilot score packs, run:
@@ -284,7 +408,7 @@ tail -n 100 "logs/raid-tuning-$TUNING_JOB_ID.err"
 cat "results/raid/$RAID_RUN_ID/tuning_comparison_v1/comparison.complete.json"
 ```
 
-## 7. Evaluation-only trimmed-mean comparison
+## 9. Evaluation-only trimmed-mean comparison
 
 This reuses the completed 500-source Falcon and Binoculars score packs. It does
 not repeat preparation, model loading, or inference:
@@ -314,7 +438,7 @@ cat "results/raid/$RAID_RUN_ID/$TRIM_OUTPUT_NAME/comparison.complete.json"
 column -s, -t < "results/raid/$RAID_RUN_ID/$TRIM_OUTPUT_NAME/summary.csv" | less -S
 ```
 
-## 8. Evaluation-only Binoculars component-clipping comparison
+## 10. Evaluation-only Binoculars component-clipping comparison
 
 Reuse the completed 500-source Falcon and Binoculars score packs:
 

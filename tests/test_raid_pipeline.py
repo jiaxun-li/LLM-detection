@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from llm_detection.io import atomic_write_json, iter_jsonl
 from RAID.raid_data import RAID_ADVERSARIAL_ATTACKS
@@ -19,6 +20,7 @@ from RAID.raid_pipeline import (
     validate_artifacts,
     write_prepared_shards,
 )
+from RAID.promote_bootstrap import promote_bootstrap_evaluation
 
 
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
@@ -306,6 +308,61 @@ class RaidPipelineTests(unittest.TestCase):
             )
             self.assertEqual(report["validation_status"], "pass")
             self.assertEqual(report["contamination_record_rows"], 24 * 12)
+
+            atomic_write_json(
+                run_dir / "manifest.json",
+                {
+                    "run_id": "test-run",
+                    "protocol": config["protocol_name"],
+                    "protocol_config": config,
+                    "git_commit": "source-test-commit",
+                    "debug_only": True,
+                    "limit_sources": 24,
+                    "bootstrap_repetitions_override": 0,
+                    "source_exclusions": None,
+                    "completion_status": "complete",
+                    "completed_stages": [
+                        "prepare", "score", "evaluate", "plot", "validate"
+                    ],
+                },
+            )
+
+            def plot_without_matplotlib(target: Path) -> dict:
+                plots = target / "plots"
+                plots.mkdir()
+                paths = [
+                    plots / "raid_attack_tpr.png",
+                    plots / "raid_contamination_tpr.png",
+                    plots / "raid_rate_bound_tradeoff.png",
+                ]
+                for path in paths:
+                    path.write_bytes(b"test")
+                marker = {"plots": [str(path) for path in paths]}
+                atomic_write_json(target / "plot.complete.json", marker)
+                return marker
+
+            with patch(
+                "RAID.promote_bootstrap.plot_stage",
+                side_effect=plot_without_matplotlib,
+            ):
+                promoted = promote_bootstrap_evaluation(
+                    workspace,
+                    root / "RAID" / "config.json",
+                    source_run_id="test-run",
+                    promotion_id="test-run-bootstrap-promotion",
+                    bootstrap_repetitions=0,
+                    debug_only=True,
+                )
+            self.assertEqual(promoted["completion_status"], "complete")
+            self.assertTrue(
+                (
+                    workspace
+                    / "results"
+                    / "raid"
+                    / "test-run-bootstrap-promotion"
+                    / "promotion.complete.json"
+                ).is_file()
+            )
 
 
 if __name__ == "__main__":

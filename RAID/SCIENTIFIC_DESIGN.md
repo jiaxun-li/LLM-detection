@@ -393,6 +393,23 @@ Report percentile 95% confidence intervals for raw TPR, clipped TPR,
 clipped-minus-raw TPR, held-out FPR, AUROC, and contamination-interval
 summaries where applicable.
 
+The 2,000-repetition result is an evaluation-only promotion of the accepted
+500-repetition run. It receives a new result ID while reusing exactly the same
+prepared rows and Falcon/Binoculars token-feature packs. Its promotion manifest
+records the source run, source and promotion Git commits, frozen configuration,
+development exclusions, and the paths, sizes, modification times, and marker
+hashes of the reused artifacts. It may rerun only evaluation, plotting, and
+validation; it must not prepare data, load a scorer, or perform model inference.
+
+Inspecting the 500-repetition intervals before promotion makes the final pass a
+Monte Carlo refinement of the already accepted estimands, not a new independent
+confirmation or another opportunity to change the method. Point estimates,
+orientation, clipping bounds, calibration thresholds, source splits, and the
+bootstrap seed remain fixed. Only the number of deterministic bootstrap draws
+increases from 500 to 2,000. The promotion must compare the new frozen
+specifications, thresholds, and every non-interval CSV value with the source
+result and fail if any value changes.
+
 ## Artifact layout and provenance
 
 The authoritative entry point is `RAID/run_raid.py`. A run with ID `<run-id>`
