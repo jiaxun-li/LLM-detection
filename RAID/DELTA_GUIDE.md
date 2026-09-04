@@ -467,3 +467,8 @@ cat "results/raid/$RAID_RUN_ID/$BINO_COMPONENT_OUTPUT_NAME/comparison.complete.j
 column -s, -t < \
   "results/raid/$RAID_RUN_ID/$BINO_COMPONENT_OUTPUT_NAME/summary.csv" | less -S
 ```
+# Detector-revision launch path
+
+For the new gap + origin / LRR / constant-candidate amendment, follow
+[../DETECTOR_REVISION.md](../DETECTOR_REVISION.md), not the legacy full-preparation
+submission path above. Existing preparation and single-model scores are reused.

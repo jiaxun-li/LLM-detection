@@ -17,6 +17,8 @@ import numpy as np
 from .data import data_row_key, stable_int
 from .io import iter_jsonl
 from .scoring import EPS
+from .detector_revision import (REVISION, PAIR_METHODS, ORIGIN_NLL,
+    origin_components, origin_score, constant_clean_scores)
 
 
 SINGLE_METHODS = [
@@ -28,6 +30,7 @@ SINGLE_METHODS = [
     "entropy_gap",
 ]
 ALL_METHODS = SINGLE_METHODS + ["binoculars"]
+REVISED_METHODS = SINGLE_METHODS + ["binocular_gap", "binocular_origin"]
 _trapezoid = np.trapezoid if hasattr(np, "trapezoid") else np.trapz
 GENERIC_FEATURE = {
     "log_likelihood": "logp",
@@ -36,6 +39,7 @@ GENERIC_FEATURE = {
     "entropy": "entropy",
 }
 EVALUATION_TOKEN_FEATURES = {
+    ORIGIN_NLL,
     "logp",
     "rank",
     "log_rank",
@@ -94,6 +98,10 @@ def compact_evaluation_row(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def detector_raw_score(row: dict[str, Any], detector: str) -> float:
+    if detector == "binocular_origin":
+        return origin_score(row)
+    if detector == "binocular_gap":
+        detector = "binoculars"
     return float(row["doc_scores"][detector])
 
 
@@ -105,14 +113,18 @@ def detector_local_values(row: dict[str, Any], detector: str) -> np.ndarray:
         return -np.asarray(features["logp"], dtype=float) - np.asarray(
             features["entropy"], dtype=float
         )
-    if detector == "binoculars":
+    if detector in {"binoculars", "binocular_gap"}:
         return np.asarray(features["performer_nll"], dtype=float) - np.asarray(
             features["observer_to_performer_cross_entropy"], dtype=float
         )
     raise KeyError(f"{detector} does not have a single local contribution")
 
 
-def orientation(tuning_human: Sequence[dict[str, Any]], tuning_llm: Sequence[dict[str, Any]], detector: str) -> int:
+def orientation(tuning_human: Sequence[dict[str, Any]], tuning_llm: Sequence[dict[str, Any]], detector: str, revised: bool = False) -> int:
+    if detector == "binocular_origin":
+        return -1
+    if revised and detector == "lrr":
+        return 1
     human = np.asarray([detector_raw_score(row, detector) for row in tuning_human])
     llm = np.asarray([detector_raw_score(row, detector) for row in tuning_llm])
     if not len(human) or not len(llm):
@@ -129,6 +141,8 @@ def oriented_score(
     spec = clip_spec or {}
     if not spec:
         return direction * detector_raw_score(row, detector)
+    if detector == "binocular_origin":
+        return direction * origin_score(row, spec)
     if detector == "lrr":
         nll = -np.asarray(row["token_features"]["logp"], dtype=float)
         log_rank = np.asarray(row["token_features"]["log_rank"], dtype=float)
@@ -138,7 +152,7 @@ def oriented_score(
     local = direction * detector_local_values(row, detector)
     clipped = np.maximum(local, spec["lower"])
     transformed = float(clipped.mean())
-    if detector == "binoculars":
+    if detector in {"binoculars", "binocular_gap"}:
         # Raw Binoculars is exp(mean local gap); exp is monotone and preserves
         # the calibrated orientation while retaining the documented formula.
         return float(math.exp(direction * transformed)) * direction
@@ -277,6 +291,9 @@ def _candidate_specs(
     quantiles: Sequence[float],
 ) -> list[dict[str, float]]:
     candidates: list[dict[str, float]] = [{}]
+    if detector == "binocular_origin":
+        nll = np.concatenate([origin_components(row)[0] for row in base_rows])
+        return candidates + [{"nll_upper": float(np.quantile(nll, q))} for q in quantiles]
     if detector == "lrr":
         nll = np.concatenate(
             [-np.asarray(row["token_features"]["logp"], dtype=float) for row in base_rows]
@@ -308,6 +325,8 @@ def tune_clipping_spec(
     tuning_clean_llm: Sequence[dict[str, Any]],
     tuning_mixture: Sequence[dict[str, Any]],
     quantiles: Sequence[float],
+    reject_constant: bool = False,
+    diagnostics: list | None = None,
 ) -> dict[str, float]:
     """Tune one frozen spec on the predefined random+tail mixture only."""
     if not tuning_mixture:
@@ -318,6 +337,11 @@ def tune_clipping_spec(
     for spec in _candidate_specs(detector, direction, base_rows, quantiles):
         human = [oriented_score(row, detector, direction, spec) for row in tuning_human]
         clean = [oriented_score(row, detector, direction, spec) for row in tuning_clean_llm]
+        if reject_constant and spec and constant_clean_scores(human, clean):
+            if diagnostics is not None:
+                diagnostics.append({"detector": detector, "specification": spec,
+                    "eligible": False, "reason": "constant_clean_tuning_scores"})
+            continue
         mixture = [oriented_score(row, detector, direction, spec) for row in tuning_mixture]
         objective = 0.8 * auroc(human, mixture) + 0.2 * auroc(human, clean)
         if objective > best_objective + 1e-15:
@@ -529,6 +553,8 @@ def _merge_score_sources(
     if binoculars_rows is not None:
         target_keys = {data_row_key(row) for row in target_rows}
         binoculars_keys = {data_row_key(row) for row in binoculars_rows}
+        if len(target_keys)!=len(target_rows) or len(binoculars_keys)!=len(binoculars_rows):
+            raise ValueError("duplicate score-row keys")
         if target_keys != binoculars_keys:
             raise ValueError("Binoculars row keys do not match target-model score keys")
         sources["binoculars"] = list(binoculars_rows)
@@ -556,16 +582,18 @@ def evaluate(
     )
     sources = _merge_score_sources(target_rows, binoculars_rows)
     eval_config = config["evaluation"]
+    revised = eval_config.get("detector_revision") == REVISION
+    rejections: list[dict[str, Any]] = []
     ratios = [float(value) for value in config["contamination"]["ratios"]]
     modes = ["random", "tail"]
     output_rows: list[dict[str, Any]] = []
 
     configured_detectors = list(config["scoring"].get("detectors", ALL_METHODS))
-    unknown = sorted(set(configured_detectors) - set(ALL_METHODS))
+    unknown = sorted(set(configured_detectors) - set(ALL_METHODS + REVISED_METHODS))
     if unknown:
         raise ValueError(f"unknown configured detectors: {unknown}")
     for detector in configured_detectors:
-        if detector == "binoculars":
+        if detector in PAIR_METHODS:
             if "binoculars" not in sources:
                 raise ValueError(
                     "Binoculars is configured but no Binoculars score file was provided"
@@ -580,7 +608,9 @@ def evaluate(
         tune_clean_llm = _clean(rows, "clipping_tuning", "llm")
         calibrate_human = _clean(rows, "calibration", "human")
         test_human = _clean(rows, "test", "human")
-        direction = orientation(tune_human, tune_clean_llm, detector)
+        direction = (orientation(tune_human, tune_clean_llm, detector, revised=True)
+                     if revised else orientation(tune_human, tune_clean_llm, detector))
+        tuning_options = {"reject_constant": True, "diagnostics": rejections} if revised else {}
         mixture_spec = eval_config["tuning_mixture"]
         tuning_mixture = [
             row
@@ -599,6 +629,7 @@ def evaluate(
             tune_clean_llm,
             tuning_mixture,
             eval_config["clipping_quantiles"],
+            **tuning_options,
         )
         analyses: list[tuple[str, str | None, dict[str, float]]] = [
             ("primary_frozen_mixture", None, primary_spec)
@@ -617,6 +648,7 @@ def evaluate(
                             tune_clean_llm,
                             oracle_mixture,
                             eval_config["clipping_quantiles"],
+                            **tuning_options,
                         ),
                     )
                 )
@@ -754,26 +786,26 @@ def evaluate(
                                     ),
                                     "binoculars_performer_model": (
                                         rows[0].get("binoculars_performer_model")
-                                        if detector == "binoculars"
+                                        if detector in PAIR_METHODS
                                         else None
                                     ),
                                     "binoculars_performer_revision": (
                                         rows[0].get(
                                             "binoculars_performer_revision"
                                         )
-                                        if detector == "binoculars"
+                                        if detector in PAIR_METHODS
                                         else None
                                     ),
                                     "binoculars_observer_model": (
                                         rows[0].get("binoculars_observer_model")
-                                        if detector == "binoculars"
+                                        if detector in PAIR_METHODS
                                         else None
                                     ),
                                     "binoculars_observer_revision": (
                                         rows[0].get(
                                             "binoculars_observer_revision"
                                         )
-                                        if detector == "binoculars"
+                                        if detector in PAIR_METHODS
                                         else None
                                     ),
                                     "split": "test",
@@ -905,6 +937,9 @@ def evaluate(
                         output_rows[index]["robustness_auc_ci_high"] = curve_ci[1]
 
     write_tidy_csv(output_csv, output_rows)
+    if revised:
+        from .io import atomic_write_json
+        atomic_write_json(Path(output_csv).with_name("clipping_rejections.json"), rejections)
     return output_rows
 
 

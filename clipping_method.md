@@ -1,5 +1,11 @@
 # Token-level clipping method
 
+Versioned amendment: [DETECTOR_REVISION.md](DETECTOR_REVISION.md) adds
+`binocular-origin` with numerator-only clipping, retains the former method as
+`binocular-gap`, fixes LRR's direction, and rejects exactly constant clean-tuning
+candidates. The historical definitions below describe the archived gap study;
+its exponential-gap formula must not be called the original Binoculars ratio.
+
 ## Purpose
 
 This document defines the token-level clipping intervention used in the primary

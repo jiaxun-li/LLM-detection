@@ -674,3 +674,9 @@ not resemble sparse human editing. Attack-level and contamination-rate results
 must therefore both be shown. A positive clipping effect establishes improved
 robust aggregation under the measured RAID modification, not a
 human-editing-specific mechanism.
+# Versioned detector amendment
+
+The revised eight-detector analysis is specified in
+[../DETECTOR_REVISION.md](../DETECTOR_REVISION.md). It preserves the legacy
+exponential-gap result and adds an independently scored official-style ratio;
+old outputs must not be silently relabeled as the published Binoculars ratio.

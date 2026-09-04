@@ -1,5 +1,9 @@
 # Scientific workflow
 
+Detector amendment: see [DETECTOR_REVISION.md](DETECTOR_REVISION.md) for the
+versioned eight-detector reanalysis (gap retained, origin added, fixed LRR, and
+constant-candidate safeguard). The historical protocol below remains archived.
+
 This is the canonical scientific protocol for the repository. The frozen
 full-scale specification is [`configs/paper.json`](configs/paper.json); the
 smoke configurations are engineering checks and are not substitutes for the

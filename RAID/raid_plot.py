@@ -56,10 +56,18 @@ def _number(row: dict[str, str], name: str) -> float:
     return float("nan") if value in {"", None} else float(value)
 
 
-def _axes_grid(plt: Any) -> tuple[Any, list[Any]]:
+def _labels(rows):
+    labels = dict(DETECTOR_LABELS)
+    if any(r["detector"] == "binocular_origin" for r in rows):
+        labels.pop("binoculars")
+        labels.update(binocular_gap="Binocular-gap", binocular_origin="Binocular-origin")
+    return labels
+
+
+def _axes_grid(plt: Any, count: int = 7) -> tuple[Any, list[Any]]:
     figure, grid = plt.subplots(4, 2, figsize=(15, 13), sharey=True)
     axes = list(grid.flat)
-    axes[-1].axis("off")
+    for axis in axes[count:]: axis.axis("off")
     return figure, axes
 
 
@@ -87,8 +95,8 @@ def _attack_plot(results_dir: Path, plt: Any) -> Path:
         row["condition"]: _number(row, "published_tpr")
         for row in _read_csv(results_dir / "binoculars_sanity.csv")
     }
-    figure, axes = _axes_grid(plt)
-    for axis, (detector, title) in zip(axes, DETECTOR_LABELS.items()):
+    figure, axes = _axes_grid(plt, len(_labels(rows)))
+    for axis, (detector, title) in zip(axes, _labels(rows).items()):
         lookup = {
             row["condition"]: row for row in rows if row["detector"] == detector
         }
@@ -121,7 +129,7 @@ def _attack_plot(results_dir: Path, plt: Any) -> Path:
             color="#805ad5",
             marker="^",
         )
-        if detector == "binoculars":
+        if detector in {"binoculars", "binocular_origin"}:
             published_x = [i for i, name in enumerate(ATTACK_ORDER) if name in sanity]
             axis.scatter(
                 published_x,
@@ -156,8 +164,8 @@ def _attack_plot(results_dir: Path, plt: Any) -> Path:
 
 def _contamination_plot(results_dir: Path, plt: Any) -> Path:
     rows = _read_csv(results_dir / "contamination_summary.csv")
-    figure, axes = _axes_grid(plt)
-    for axis, (detector, title) in zip(axes, DETECTOR_LABELS.items()):
+    figure, axes = _axes_grid(plt, len(_labels(rows)))
+    for axis, (detector, title) in zip(axes, _labels(rows).items()):
         selected = sorted(
             (row for row in rows if row["detector"] == detector),
             key=lambda row: int(row["contamination_bin_index"]),
@@ -227,8 +235,8 @@ def _contamination_plot(results_dir: Path, plt: Any) -> Path:
 
 def _rate_bound_tradeoff_plot(results_dir: Path, plt: Any) -> Path:
     rows = _read_csv(results_dir / "rate_bound_tradeoff_summary.csv")
-    figure, axes = _axes_grid(plt)
-    for axis, (detector, title) in zip(axes, DETECTOR_LABELS.items()):
+    figure, axes = _axes_grid(plt, len(_labels(rows)))
+    for axis, (detector, title) in zip(axes, _labels(rows).items()):
         detector_rows = [row for row in rows if row["detector"] == detector]
         none = {
             int(row["contamination_bin_index"]): row

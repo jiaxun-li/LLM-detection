@@ -38,6 +38,8 @@ DETECTOR_LABELS = {
     "entropy": "Entropy",
     "entropy_gap": "Entropy gap",
     "binoculars": "Binoculars",
+    "binocular_gap": "Binocular-gap",
+    "binocular_origin": "Binocular-origin (prompt-conditioned)",
 }
 
 MODE_COLORS = {

@@ -411,7 +411,10 @@ class RAIDFalconScorer:
 
 
 class RAIDBinocularsScorer:
-    """Official Falcon observer/performer Binoculars plus local clipping gaps."""
+    """Legacy exponential-gap scorer, retained for historical reproducibility.
+
+    The separate RAIDBinocularsOriginScorer implements the published ratio.
+    """
 
     def __init__(
         self,

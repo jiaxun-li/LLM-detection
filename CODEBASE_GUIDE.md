@@ -1,5 +1,9 @@
 # Codebase guide
 
+For preservation-safe primary/RAID detector reanalysis, use the new entry points
+and Delta wrapper in [DETECTOR_REVISION.md](DETECTOR_REVISION.md). Legacy entry
+points intentionally retain their old scientific configuration.
+
 This is the canonical implementation and operations guide. For the research
 design and interpretation rules, see
 [`SCIENTIFIC_WORKFLOW.md`](SCIENTIFIC_WORKFLOW.md). Commands that load datasets,

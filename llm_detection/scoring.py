@@ -117,11 +117,14 @@ def exact_token_features(
 
 
 def binoculars_score(mean_performer_nll: float, mean_observer_to_performer_xent: float) -> float:
-    """Upstream-style Binoculars ratio.
+    """Legacy binocular-gap score (NOT the published Binoculars ratio).
 
     numerator   = exp(mean NLL under performer/instruct model)
     denominator = exp(mean H(observer/base distribution, performer distribution))
     score       = numerator / denominator
+
+    Kept unchanged for historical score packs. The published score divides
+    mean NLL by mean cross-entropy, without either exponential.
     """
     return float(math.exp(mean_performer_nll - mean_observer_to_performer_xent))
 

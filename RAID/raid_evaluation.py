@@ -11,6 +11,9 @@ import numpy as np
 from llm_detection.evaluation import ALL_METHODS, actual_fpr, auroc, calibration_threshold, percentile_interval
 from llm_detection.io import atomic_write_json
 from llm_detection.scoring import EPS
+from llm_detection.detector_revision import (REVISION, ORIGIN_NLL, ORIGIN_DENOMINATOR,
+    origin_components, origin_score, constant_clean_scores)
+from llm_detection.evaluation import REVISED_METHODS
 from RAID.raid_data import measure_realized_contamination
 
 DETECTORS = tuple(ALL_METHODS)
@@ -71,9 +74,11 @@ def local(r,d):
     if d=="log_rank": return feat(r,"log_rank")
     if d=="entropy": return feat(r,"entropy")
     if d=="entropy_gap": return -feat(r,"logp")-feat(r,"entropy")
-    if d=="binoculars": return feat(r,"performer_nll")-feat(r,"cross_entropy")
+    if d in {"binoculars","binocular_gap"}: return feat(r,"performer_nll")-feat(r,"cross_entropy")
     raise KeyError(d)
 def raw_document_score(r,d):
+    if d=="binocular_origin": return origin_score(r)
+    if d=="binocular_gap": d="binoculars"
     ds=r.get("doc_scores",{})
     if d in ds: return float(ds[d])
     if d=="lrr": return float((-feat(r,"logp")).mean()/(feat(r,"log_rank").mean()+EPS))
@@ -81,12 +86,13 @@ def raw_document_score(r,d):
 def oriented_document_score(r,d,direction,spec=None):
     spec=spec or {}
     if not spec: return direction*raw_document_score(r,d)
+    if d=="binocular_origin": return direction*origin_score(r,spec)
     if d=="lrr":
         n=np.minimum(-feat(r,"logp"),spec["nll_upper"])
         q=np.minimum(feat(r,"log_rank"),spec["log_rank_upper"])
         return direction*float(n.mean()/(q.mean()+EPS))
     m=float(np.maximum(direction*local(r,d),spec["lower"]).mean())
-    return direction*math.exp(direction*m) if d=="binoculars" else m
+    return direction*math.exp(direction*m) if d in {"binoculars","binocular_gap"} else m
 
 def stable_row_key(r):
     explicit=_first(r,("row_key","stable_row_key"))
@@ -94,14 +100,16 @@ def stable_row_key(r):
     return (source(r),split(r),"human" if human(r) else "machine",condition(r),
             str(_first(r,("base_generation_id","generation_id","machine_id"),"")))
 def merge_score_rows(falcon_rows,binoculars_rows=None):
-    out={stable_row_key(r):dict(r) for r in falcon_rows}
+    out={stable_row_key(r):{**r,"doc_scores":dict(r.get("doc_scores",{})),
+        "token_features":dict(r.get("token_features",{}))} for r in falcon_rows}
     if len(out)!=len(falcon_rows): raise ValueError("duplicate Falcon row key")
     if binoculars_rows is None:return list(out.values())
     b={stable_row_key(r):r for r in binoculars_rows}
+    if len(b)!=len(binoculars_rows):raise ValueError("duplicate Binoculars row key")
     if set(out)!=set(b): raise ValueError("Falcon/Binoculars row-key mismatch")
     for k,br in b.items():
-        out[k].setdefault("doc_scores",{}).update({x:y for x,y in br.get("doc_scores",{}).items() if x=="binoculars"})
-        names=set(FEATURES["performer_nll"]+FEATURES["cross_entropy"])
+        out[k].setdefault("doc_scores",{}).update({x:y for x,y in br.get("doc_scores",{}).items() if x in {"binoculars","binocular_origin",ORIGIN_DENOMINATOR}})
+        names=set(FEATURES["performer_nll"]+FEATURES["cross_entropy"])|{ORIGIN_NLL}
         out[k].setdefault("token_features",{}).update({x:y for x,y in br.get("token_features",{}).items() if x in names})
     return list(out.values())
 
@@ -135,17 +143,23 @@ def attach_contamination_rates(rows):
     return rows
 def rho(r): return float(r.get("contamination_rate",0.0))
 
-def learn_direction(d,h,m):
+def learn_direction(d,h,m,revised=False):
+    if d=="binocular_origin":return -1
+    if revised and d=="lrr":return 1
     return 1 if np.mean([raw_document_score(r,d) for r in m])>=np.mean([raw_document_score(r,d) for r in h]) else -1
 def candidate_specifications(d,direction,clean,quantiles=QUANTILE_GRID):
     out=[{}]
+    if d=="binocular_origin":
+        a=np.concatenate([origin_components(r)[0] for r in clean])
+        return out+[{"nll_upper":float(np.quantile(a,q))} for q in quantiles]
     if d=="lrr":
         a=np.concatenate([-feat(r,"logp") for r in clean]); b=np.concatenate([feat(r,"log_rank") for r in clean])
         return out+[{"nll_upper":float(np.quantile(a,q)),"log_rank_upper":float(np.quantile(b,z))} for q in quantiles for z in quantiles]
     a=np.concatenate([direction*local(r,d) for r in clean])
     return out+[{"lower":float(np.quantile(a,1-q))} for q in quantiles]
 def select_universal_specification(
-    d,direction,h,clean,attacks,quantiles=QUANTILE_GRID,require_all_attacks=True
+    d,direction,h,clean,attacks,quantiles=QUANTILE_GRID,require_all_attacks=True,
+    reject_constant=False
 ):
     attacks={name:list(values) for name,values in attacks.items() if values}
     if not attacks:raise ValueError("universal clipping requires represented attacks")
@@ -154,7 +168,12 @@ def select_universal_specification(
     best={}; best_j=-math.inf; diagnostics=[]
     for i,spec in enumerate(candidate_specifications(d,direction,list(h)+list(clean),quantiles)):
         hs=[oriented_document_score(r,d,direction,spec) for r in h]
-        ca=auroc(hs,[oriented_document_score(r,d,direction,spec) for r in clean])
+        clean_scores=[oriented_document_score(r,d,direction,spec) for r in clean]
+        if reject_constant and spec and constant_clean_scores(hs,clean_scores):
+            diagnostics.append({"candidate_index":i,"specification":spec,"objective":None,
+                "eligible":False,"reason":"constant_clean_tuning_scores"})
+            continue
+        ca=auroc(hs,clean_scores)
         aa={a:auroc(hs,[oriented_document_score(r,d,direction,spec) for r in rs]) for a,rs in sorted(attacks.items())}
         j=.8*float(np.mean(list(aa.values())))+.2*ca
         diagnostics.append({"candidate_index":i,"specification":spec,"objective":j,"clean_auroc":ca,"attack_aurocs":aa})
@@ -164,7 +183,7 @@ def select_universal_specification(
 def select_rate_adaptive_specification(
     d,direction,h,clean,bin_rows,universal_spec,min_tuning_rows,
     clean_auroc_loss_budget=RATE_ADAPTIVE_CLEAN_AUROC_LOSS_BUDGET,
-    quantiles=QUANTILE_GRID
+    quantiles=QUANTILE_GRID,reject_constant=False
 ):
     """Fit one bound by attacked AUROC gain under a clean-loss constraint.
 
@@ -190,7 +209,12 @@ def select_rate_adaptive_specification(
     best={};best_gain=-math.inf;diagnostics=[]
     for i,spec in enumerate(candidates):
         hs=[oriented_document_score(r,d,direction,spec) for r in h]
-        clean_auc=auroc(hs,[oriented_document_score(r,d,direction,spec) for r in clean])
+        clean_scores=[oriented_document_score(r,d,direction,spec) for r in clean]
+        if reject_constant and spec and constant_clean_scores(hs,clean_scores):
+            diagnostics.append({"candidate_index":i,"specification":spec,
+                "constraint_feasible":False,"reason":"constant_clean_tuning_scores"})
+            continue
+        clean_auc=auroc(hs,clean_scores)
         attack_aucs={name:auroc(hs,[oriented_document_score(r,d,direction,spec) for r in values])
           for name,values in attack_rows.items()}
         gains={name:attack_aucs[name]-raw_attack_aucs[name] for name in attack_aucs}
@@ -380,9 +404,12 @@ def _tidy(analysis,wide):
             out.append(z)
     return out
 
-def evaluate_raid(falcon_rows,config=None,binoculars_rows=None,published_binoculars=None):
+def evaluate_raid(falcon_rows,config=None,binoculars_rows=None,published_binoculars=None,
+                  contamination_records=None):
     """Evaluate raw, universal clipped, and fixed-rate-oracle clipped scores."""
     cfg=dict(config or {}); cfg={**cfg,**cfg.get("evaluation",{})}
+    revised=cfg.get("detector_revision")==REVISION
+    detectors=tuple(REVISED_METHODS) if revised else DETECTORS
     if float(cfg.get("target_fpr",TARGET_FPR))!=TARGET_FPR:raise ValueError("only 5% FPR is allowed")
     if tuple(cfg.get("clipping_quantiles",QUANTILE_GRID))!=QUANTILE_GRID:raise ValueError("quantile grid is frozen")
     attack_weight=float(cfg.get("attack_weight",.8));clean_weight=float(cfg.get("clean_weight",.2))
@@ -390,11 +417,29 @@ def evaluate_raid(falcon_rows,config=None,binoculars_rows=None,published_binocul
         raise ValueError("selection weights are frozen at attack=.8 and clean=.2")
     reps=int(cfg.get("bootstrap_repetitions",2000)); bseed=int(cfg.get("bootstrap_seed",481516))
     rows=merge_score_rows(falcon_rows,binoculars_rows)
+    if revised and any(ORIGIN_NLL not in r.get("token_features",{}) or
+                       "binocular_origin" not in r.get("doc_scores",{}) for r in rows):
+        raise ValueError("revised RAID requires the separate official binocular-origin pack")
     configured_attacks=cfg.get("expected_attacks")
     if configured_attacks is None and isinstance(config,Mapping):
         configured_attacks=config.get("dataset",{}).get("required_attacks")
     attacks,counts=_validate(rows,configured_attacks)
-    rows=attach_contamination_rates(rows)
+    counts["detectors"]=list(detectors)
+    if contamination_records is None:
+        rows=attach_contamination_rates(rows)
+    else:
+        cached={(str(r["source_id"]),r["split"],r["attack"]):r for r in contamination_records}
+        expected={(source(r),split(r),condition(r)) for r in rows if not human(r)}
+        if len(cached)!=len(contamination_records) or set(cached)!=expected:
+            raise ValueError("cached contamination records do not match the source pack")
+        for r in rows:
+            if not human(r):
+                saved=cached[(source(r),split(r),condition(r))]
+                rate=float(saved["realized_contamination_rate"])
+                if not 0<=rate<=1:raise ValueError("invalid cached contamination rate")
+                r.update({k:v for k,v in saved.items() if k not in r})
+                r["contamination_rate"]=rate
+                r["realized_contamination_rate"]=rate
     contamination_fields=(
       "source_id","sample_id","split","domain","raid_id","base_generation_id",
       "attack","source_generator_model","model","decoding","repetition_penalty",
@@ -438,10 +483,12 @@ def evaluate_raid(falcon_rows,config=None,binoculars_rows=None,published_binocul
     attack_summary=[];contamination_summary=[];rate_bound_tradeoff_summary=[];calibration_summary=[]
     fallback_specs=0
     test_none=[r for r in testm if condition(r)=="none"]
-    for d in DETECTORS:
-        direction=learn_direction(d,th,tc);spec,diagnostics=select_universal_specification(d,direction,th,tc,ta)
+    if revised:frozen["detector_revision"]=REVISION
+    for d in detectors:
+        direction=learn_direction(d,th,tc,revised=revised)
+        spec,diagnostics=select_universal_specification(d,direction,th,tc,ta,reject_constant=revised)
         eligible_spec,eligible_diagnostics=select_universal_specification(
-          d,direction,th,tc,eligible_ta,require_all_attacks=False)
+          d,direction,th,tc,eligible_ta,require_all_attacks=False,reject_constant=revised)
         thresholds,cs=_thresholds(cal,d,direction,spec,"full_universal");calibration_summary+=cs
         eligible_thresholds,eligible_cs=_thresholds(
           cal,d,direction,eligible_spec,"eligible_universal");calibration_summary+=eligible_cs
@@ -498,7 +545,7 @@ def evaluate_raid(falcon_rows,config=None,binoculars_rows=None,published_binocul
             mr=test_bins.get((i,label),[])
             if not mr:raise ValueError(f"fixed contamination bin {label} has no test rows")
             adaptive_spec,adaptive_diagnostics,adaptive_meta=select_rate_adaptive_specification(
-              d,direction,th,tc,tuning_machine,spec,min_rate_rows,clean_loss_budget)
+              d,direction,th,tc,tuning_machine,spec,min_rate_rows,clean_loss_budget,reject_constant=revised)
             if adaptive_meta["fallback_to_universal"]:fallback_specs+=1
             adaptive_thresholds,adaptive_calibration=_thresholds(
               cal,d,direction,adaptive_spec,"rate_adaptive",i,label)
@@ -572,7 +619,8 @@ def evaluate_raid(falcon_rows,config=None,binoculars_rows=None,published_binocul
     pub=dict(PUBLISHED_BINOCULARS_TPR)
     pub.update({condition({"label":"llm","attack":k}):float(v) for k,v in configured_published.items()})
     pub.update({condition({"label":"llm","attack":k}):float(v) for k,v in (published_binoculars or {}).items()})
-    lookup={r["condition"]:r for r in attack_summary if r["detector"]=="binoculars"}
+    sanity_detector="binocular_origin" if revised else "binoculars"
+    lookup={r["condition"]:r for r in attack_summary if r["detector"]==sanity_detector}
     sanity=[{"condition":c,"target_fpr":TARGET_FPR,"published_tpr":p,"reproduced_raw_tpr":lookup[c]["raw_tpr"],
       "reproduced_raw_tpr_ci_low":lookup[c].get("raw_tpr_ci_low"),"reproduced_raw_tpr_ci_high":lookup[c].get("raw_tpr_ci_high"),
       "difference_from_published":lookup[c]["raw_tpr"]-p,"reproduced_raw_held_out_fpr":lookup[c]["raw_test_fpr"]}
@@ -581,9 +629,9 @@ def evaluate_raid(falcon_rows,config=None,binoculars_rows=None,published_binocul
     counts.update({"attack_summary_rows":len(attack_summary),"contamination_summary_rows":len(contamination_summary),
       "rate_bound_tradeoff_rows":len(rate_bound_tradeoff_summary),
       "metrics_rows":len(metrics),"calibration_rows":len(calibration_summary),"binoculars_sanity_rows":len(sanity),
-      "bootstrap_repetitions":reps,"contamination_cutpoints":cuts,"universal_specs":14,
-      "full_universal_specs":7,"eligible_universal_specs":7,
-      "rate_adaptive_specs":len(DETECTORS)*len(RATE_ADAPTIVE_BIN_INDICES),
+      "bootstrap_repetitions":reps,"contamination_cutpoints":cuts,"universal_specs":2*len(detectors),
+      "full_universal_specs":len(detectors),"eligible_universal_specs":len(detectors),
+      "rate_adaptive_specs":len(detectors)*len(RATE_ADAPTIVE_BIN_INDICES),
       "rate_adaptive_fallback_specs":fallback_specs,"attack_specific_specs":0,
       "contamination_record_rows":len(contamination_records)})
     return RaidEvaluationResult(frozen,metrics,attack_summary,contamination_summary,
