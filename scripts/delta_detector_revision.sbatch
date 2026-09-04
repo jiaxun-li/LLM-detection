@@ -24,6 +24,17 @@ case "$(readlink -f results)" in /work/hdd/*) ;; *) echo 'results must resolve u
 : "${SOURCE_RUN_ID:?Set source run ID}"
 : "${REVISION_ID:?Set new revision ID}"
 : "${REVISION_STAGE:?Set primary, gate, score, or evaluate}"
+case "$REVISION_STAGE" in
+    primary|gate|score|evaluate) ;;
+    *) echo "Invalid REVISION_STAGE: $REVISION_STAGE"; exit 2 ;;
+esac
+if [[ "$REVISION_STAGE" == gate ]]; then
+    : "${REFERENCE_METRICS:?Set reviewed upstream metrics.py path}"
+    if [[ ! -r "$REFERENCE_METRICS" || ! -s "$REFERENCE_METRICS" ]]; then
+        echo "Reference metrics file is missing, empty, or unreadable: $REFERENCE_METRICS"
+        exit 2
+    fi
+fi
 if [[ "$REVISION_STAGE" == primary ]]; then
     srun python -u scripts/reevaluate_detector_revision.py \
       --source-run-id "$SOURCE_RUN_ID" --revision-id "$REVISION_ID" \
@@ -34,9 +45,9 @@ else
           --bootstrap-repetitions "${BOOTSTRAP_REPETITIONS:-2000}")
     if [[ "$REVISION_STAGE" == gate ]]; then
         echo 'Running synthetic regression tests; their PASS messages are not the real RAID gate result.'
-        python -m unittest tests.test_detector_revision -v
+        srun python -u scripts/check_detector_revision_gate.py
         echo 'Starting real full-input tokenizer preflight and bounded GPU pipeline gate.'
-        args+=(--reference-metrics "${REFERENCE_METRICS:?Set reviewed upstream metrics.py path}")
+        args+=(--reference-metrics "$REFERENCE_METRICS")
     elif [[ "$REVISION_STAGE" == score ]]; then
         args+=(--shard-index "${SLURM_ARRAY_TASK_ID:?Submit a scoring array}")
     fi

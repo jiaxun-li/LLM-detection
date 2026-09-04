@@ -171,11 +171,14 @@ Torch-dependent component tests and the live upstream gate must pass on Delta;
 local CPU tests alone do not establish GPU/model parity. The local environment
 does not contain Torch, so no new inference has been performed here.
 
-After publishing v3, first run `tests.test_detector_revision.CudaReplayTests`
-inside a small one-GPU allocation. These tests require no checkpoints or dataset
-files and compare actual CUDA masked reductions, both raw and capped, plus
-synthetic BF16 cross-entropy outputs. Confirm CUDA is available: skipped tests
-are not a pass. Only then retry the RAID gate with a new revision ID. Previously
+After publishing v3, retry the existing RAID gate with a new revision ID; do not
+submit a separate CUDA diagnostic. The wrapper uses the standard Delta module
+setup, checks the stage and reference-file arguments, and runs
+`scripts/check_detector_revision_gate.py` before full-input tokenization or model
+loading. That runner requires two visible CUDA GPUs and runs the entire revision
+test module, including actual CUDA masked reductions (raw and capped) and
+synthetic BF16 cross-entropy outputs. Any failed or skipped test stops the gate.
+The same job then proceeds to the bounded real-model pipeline check. Previously
 completed v2 primary conditional evaluations do not require another run solely
 for this CUDA divisor correction; their float64 calculation is unchanged.
 
