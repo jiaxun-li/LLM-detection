@@ -12,7 +12,7 @@ from llm_detection.evaluation import ALL_METHODS, actual_fpr, auroc, calibration
 from llm_detection.io import atomic_write_json
 from llm_detection.scoring import EPS
 from llm_detection.detector_revision import (REVISION, ORIGIN_NLL, ORIGIN_DENOMINATOR,
-    origin_components, origin_score, constant_clean_scores)
+    origin_components, origin_score, constant_clean_scores, structurally_constant_candidate)
 from llm_detection.evaluation import REVISED_METHODS
 from RAID.raid_data import measure_realized_contamination
 
@@ -169,7 +169,8 @@ def select_universal_specification(
     for i,spec in enumerate(candidate_specifications(d,direction,list(h)+list(clean),quantiles)):
         hs=[oriented_document_score(r,d,direction,spec) for r in h]
         clean_scores=[oriented_document_score(r,d,direction,spec) for r in clean]
-        if reject_constant and spec and constant_clean_scores(hs,clean_scores):
+        if reject_constant and spec and (constant_clean_scores(hs,clean_scores) or
+                structurally_constant_candidate(list(h)+list(clean),d,direction,spec)):
             diagnostics.append({"candidate_index":i,"specification":spec,"objective":None,
                 "eligible":False,"reason":"constant_clean_tuning_scores"})
             continue
@@ -210,7 +211,8 @@ def select_rate_adaptive_specification(
     for i,spec in enumerate(candidates):
         hs=[oriented_document_score(r,d,direction,spec) for r in h]
         clean_scores=[oriented_document_score(r,d,direction,spec) for r in clean]
-        if reject_constant and spec and constant_clean_scores(hs,clean_scores):
+        if reject_constant and spec and (constant_clean_scores(hs,clean_scores) or
+                structurally_constant_candidate(list(h)+list(clean),d,direction,spec)):
             diagnostics.append({"candidate_index":i,"specification":spec,
                 "constraint_feasible":False,"reason":"constant_clean_tuning_scores"})
             continue

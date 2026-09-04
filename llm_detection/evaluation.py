@@ -18,7 +18,7 @@ from .data import data_row_key, stable_int
 from .io import iter_jsonl
 from .scoring import EPS
 from .detector_revision import (REVISION, PAIR_METHODS, ORIGIN_NLL,
-    origin_components, origin_score, constant_clean_scores)
+    origin_components, origin_score, constant_clean_scores, structurally_constant_candidate)
 
 
 SINGLE_METHODS = [
@@ -337,7 +337,8 @@ def tune_clipping_spec(
     for spec in _candidate_specs(detector, direction, base_rows, quantiles):
         human = [oriented_score(row, detector, direction, spec) for row in tuning_human]
         clean = [oriented_score(row, detector, direction, spec) for row in tuning_clean_llm]
-        if reject_constant and spec and constant_clean_scores(human, clean):
+        if reject_constant and spec and (constant_clean_scores(human, clean) or
+                structurally_constant_candidate(base_rows, detector, direction, spec)):
             if diagnostics is not None:
                 diagnostics.append({"detector": detector, "specification": spec,
                     "eligible": False, "reason": "constant_clean_tuning_scores"})

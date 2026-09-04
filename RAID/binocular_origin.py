@@ -3,13 +3,14 @@
 Raw reductions follow ahans30/Binoculars binoculars/metrics.py (mean mode):
 https://github.com/ahans30/Binoculars/blob/main/binoculars/metrics.py
 Model logits stay in the configured dtype. Numerator uses causal shifting;
-denominator uses ALL input positions and input_id != pad_id, including EOS.
+denominator considers ALL input positions and masks input_id == pad_id (so
+EOS is excluded too when the tokenizer uses EOS as its padding ID).
 """
 from __future__ import annotations
 
 import numpy as np
 
-from llm_detection.detector_revision import ORIGIN_NLL, ORIGIN_DENOMINATOR
+from llm_detection.detector_revision import ORIGIN_NLL, ORIGIN_DENOMINATOR, official_nll_mean
 from RAID.raid_scoring import RAIDBinocularsScorer, _torch
 
 SCHEMA = "raid-binocular-origin-official-v1"
@@ -42,6 +43,8 @@ class RAIDBinocularsOriginScorer(RAIDBinocularsScorer):
         super().__init__(config, **kwargs)
         if self.max_tokens != 512:
             raise ValueError("binocular-origin RAID limit is fixed at 512")
+        if self.requested_dtype not in {"bf16", "bfloat16"}:
+            raise ValueError("official RAID origin protocol requires BF16")
         self.reference_metrics = reference_metrics
         self.parity_checks = 0
         self.tokenizer.padding_side = "right"
@@ -52,6 +55,16 @@ class RAIDBinocularsOriginScorer(RAIDBinocularsScorer):
     @property
     def feature_schema(self):
         return SCHEMA
+
+    def token_count(self, row):
+        # Use exactly the official tokenizer window, not the parent's optional
+        # one-token BOS repair. The full-input preflight rejects such records.
+        encoded = self.tokenizer([row["text"]], padding=False, truncation=True,
+                                 max_length=512, return_token_type_ids=False)
+        ids = encoded["input_ids"][0]
+        if len(ids) < 2 or not any(i != self.tokenizer.pad_token_id for i in ids):
+            raise ValueError("unscorable official window; no silent BOS insertion")
+        return len(ids)
 
     def validate_existing_row(self, row):
         for key, expected in {
@@ -68,12 +81,18 @@ class RAIDBinocularsOriginScorer(RAIDBinocularsScorer):
             if row.get(key) != expected:
                 raise ValueError(f"binocular-origin provenance mismatch: {key}")
         values = np.asarray(row["token_features"][ORIGIN_NLL])
-        if len(values) != row["num_scored_tokens"] or not np.isfinite(values).all():
+        if (values.ndim != 1 or not len(values) or len(values) != row["num_scored_tokens"]
+                or not np.isfinite(values).all() or (values < 0).any()):
             raise ValueError("invalid binocular-origin token features")
         for key in ("binocular_origin", ORIGIN_DENOMINATOR):
             value=row["doc_scores"][key]
             if not np.isfinite(value) or value < 0 or (key==ORIGIN_DENOMINATOR and value==0):
                 raise ValueError("invalid binocular-origin document score")
+        numerator = official_nll_mean(values)
+        ds = row["doc_scores"]
+        if (numerator != ds["binocular_origin_numerator"] or
+                float(np.float32(numerator)/np.float32(ds[ORIGIN_DENOMINATOR])) != ds["binocular_origin"]):
+            raise ValueError("saved official numerator/ratio disagrees with BF16 replay")
 
     def score_batch(self, rows):
         torch = _torch()
@@ -96,6 +115,16 @@ class RAIDBinocularsOriginScorer(RAIDBinocularsScorer):
                     ref_b = self.reference_metrics.entropy(p, q, performed, self.tokenizer.pad_token_id)
                     if not np.array_equal(a, ref_a) or not np.array_equal(b, ref_b):
                         raise ValueError("upstream Binoculars component parity failed")
+                    saved_nll = nll[0].cpu().float().numpy()
+                    # Check the analysis-time BF16 replay against actual Torch
+                    # capped reductions, including a nonrepresentable bound.
+                    for upper in (float(saved_nll.min()), float(np.quantile(saved_nll,.9)),
+                                  float(saved_nll.max()) - 0.0001):
+                        upper = max(0., upper)
+                        capped = torch.minimum(nll, torch.tensor(upper,dtype=nll.dtype,device=nll.device))
+                        actual = float((capped.sum(1)/capped.shape[1]).cpu().float()[0])
+                        if official_nll_mean(saved_nll,upper) != actual:
+                            raise ValueError("capped BF16 numerator replay failed")
                     self.parity_checks += 1
                 output = {k: v for k, v in row.items() if k not in {"text", "prompt"}}
                 output.update({

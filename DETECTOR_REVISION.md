@@ -1,6 +1,8 @@
 # Detector amendment: retain gap, add origin, fix LRR, reject constant candidates
 
 Revision ID: `binocular-origin-lrr-constant-v1`.
+Implementation amendment: `native-falcon-numerics-gate-v2`. Use new result and
+RAID revision IDs; do not resume a gate produced by the earlier implementation.
 This is an explicit reanalysis, not a replacement of archived results. The
 legacy entry points/configurations retain their old behavior for reproducibility.
 Use the new entry points below to apply all four changes together. No archived
@@ -29,15 +31,26 @@ JSONL, manifest, result, or frozen specification is renamed or overwritten.
   A new, separately named score pack is necessary: the legacy CE arrays omit
   the final position. Legacy gap scores continue using the old arrays.
 - RAID official raw reductions retain upstream rounding. The custom clipped
-  numerator is aggregated in float64 from saved token NLL, divided by the saved
-  official denominator. No-clipping and bounds that change no token in a document
-  return that document's official raw scalar exactly (no rounding-only changes).
+  numerator now uses the SAME BF16 token/sum/division rounding and final float32
+  ratio as raw, with the saved official denominator unchanged. The analysis
+  replays those operations from saved token NLL using NumPy (no new inference).
+  Every new score row checks unmodified replay against its actual Torch numerator;
+  the live gate additionally compares capped replay with Torch capped reductions.
+  No-clipping and bounds changing no token return the official raw scalar exactly.
+  This replaces the earlier mixed BF16-raw/float64-clipped reduction, which could
+  confound clipping with rounding. Primary conditional ratios keep their existing
+  float64 aggregation on BOTH raw and clipped sides.
 - LRR direction is fixed to `+1` (larger = machine) in revised runs. Formula,
   competition-rank tie handling, and two-component caps are unchanged. Other
   learned directions remain unchanged; origin is fixed to `-1`.
 - Reject a nonempty clipping candidate if **all pooled clean human and clean
   machine tuning document scores are exactly identical**. No tolerance, no new
   cutoff, no calibration/test inspection. No clipping is always available.
+  Also reject structurally fully saturated candidates before averaging: different
+  document lengths can otherwise create rounding-only differences despite every
+  token being capped to the same constant. LRR requires both components fully
+  saturated. Origin is not rejected on numerator saturation alone because its
+  varying denominator can still carry information.
   Rejections appear in primary `clipping_rejections.json` and RAID candidate
   diagnostics. Zero TPR alone is not a reason to reject a candidate.
 - Existing tuning objectives, rate bins, source splits, calibration and source-
@@ -51,8 +64,16 @@ JSONL, manifest, result, or frozen specification is renamed or overwritten.
    using each completed source run and a new result ID. Re-evaluate all eight
    detectors, not just SQuAD: origin and the constant safeguard affect every cell.
 2. RAID: `RAID/revise_detectors.py --stage gate` on the completed source run.
-   Compares components on identical logits against a separately obtained upstream
-   `metrics.py`, using one real document per condition plus long/Unicode probes.
+   First scans ALL prepared texts with the pinned native tokenizer, without model
+   inference, and verifies the prepared shards exactly cover the same records.
+   Empty/one-token/all-pad windows fail with a diagnostic report; no text is
+   dropped, repaired or changed automatically. Then selects one complete source
+   family per split/domain, before any scores are inspected (normally 24 sources,
+   312 rows for eight domains). Exercises real score-pack writing, unchanged
+   resume, joining saved Falcon/gap packs, evaluation and plotting. These tiny
+   gate results are engineering checks only and never supply full-run thresholds.
+   Compares components on identical logits against separately obtained upstream
+   `metrics.py`, including two extra long/Unicode probes and capped BF16 replay.
    Records reference SHA256 and immutable model/tokenizer revisions. This gate
    checks component parity, not equality of the entire RAID published table.
 3. After the gate passes, `--stage score` as four shards. Reads existing prepared
@@ -75,6 +96,8 @@ Before submission, check branch/status, available allocation, disk space, and
 that both `readlink -f runs` and `readlink -f results` resolve below `/work/hdd`.
 Create `logs` before using the wrapper. Models are loaded offline from the
 existing shared cache. A cache miss stops the job instead of downloading models.
+Use native Transformers Falcon (`trust_remote_code=False`), as in the completed
+RAID source run. Do not load its incompatible cached legacy modeling code.
 
 Environment variables:
 
@@ -97,7 +120,7 @@ sbatch --account=bhuc-delta-gpu --gpus-per-node=1 --mem=240G --time=08:00:00 \
 # RAID: first obtain/review the upstream reference outside Git, then run gate.
 # REFERENCE_METRICS must point to that file. The gate saves its SHA256.
 export REVISION_STAGE=gate
-sbatch --account=bhuc-delta-gpu --time=00:45:00 \
+sbatch --account=bhuc-delta-gpu --time=02:00:00 \
   scripts/delta_detector_revision.sbatch
 
 # Only after gate.complete.json reports pass for this exact revision/source:
@@ -119,8 +142,19 @@ two as provisional estimates, excluding queueing, not guarantees.
 
 An interrupted scoring shard resumes under the same source/revision/config.
 An incomplete evaluation can also restart with the same inputs; completed outputs
-are left alone. A failed gate should use a fresh revision ID after diagnosis.
+are left alone. Completion now records SHA256/size for every required result and
+plot; an already-complete resume verifies them rather than trusting markers.
+An interruption between writing the validation report, manifest and final marker
+is recoverable without repeating evaluation. Missing/modified artifacts in a
+claimed complete result fail explicitly (no silent overwrite or false success).
+A failed gate should use a fresh revision ID after diagnosis.
 No old result directory should be deleted to make room for this amendment.
+
+The expanded gate scans existing prepared and saved-score files, but does not
+rebuild the RAID index or reread the original train.csv. Its GPU inference is
+bounded; disk reading and full-data tokenization time still depend on Delta I/O.
+It prints preflight progress every 10,000 records. Do not infer its duration from
+the old 15-document gate.
 
 ## Validation status and limitations
 

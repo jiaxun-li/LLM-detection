@@ -12,6 +12,7 @@ from RAID.revise_detectors import identifier, fingerprint, read_json, implementa
 from llm_detection.detector_revision import REVISION
 from llm_detection.evaluation import REVISED_METHODS, evaluate
 from llm_detection.io import atomic_write_json, iter_jsonl
+from llm_detection.revision_artifacts import PRIMARY_ARTIFACTS, finish_revision, resume_completed_revision
 
 
 def revised_config(manifest, result_id, repetitions=None):
@@ -47,13 +48,13 @@ def main():
         "binocular_origin_context":"conditional_same_saved_continuation_window",
         "binocular_gap":"legacy_exp_mean_gap_unchanged"}
     marker=output/"revision_manifest.json"
-    if output.exists():
+    if marker.exists():
         previous=read_json(marker)
         if any(previous.get(k)!=v for k,v in identity.items()):raise ValueError("revision resume mismatch")
-        if previous.get("completion_status")=="complete":
-            if read_json(output/"revision.complete.json").get("validation_status")!="pass":
-                raise ValueError("completed revision lacks passing marker")
+        if resume_completed_revision(output,previous,PRIMARY_ARTIFACTS):
             print("primary revision already complete");return
+    elif output.exists() and any(p.name != "revision_manifest.json.tmp" for p in output.iterdir()):
+        raise ValueError("nonempty result directory has no revision identity")
     output.mkdir(parents=True,exist_ok=True)
     atomic_write_json(marker,{**identity,"completion_status":"running"})
     # Fail on missing or incompatible conditioning rather than quietly changing it.
@@ -73,9 +74,7 @@ def main():
         raise ValueError("source artifacts changed during evaluation")
     report={"validation_status":"pass","detectors":REVISED_METHODS,"metric_rows":len(rows),
         "bootstrap_repetitions":config["evaluation"]["bootstrap_repetitions"]}
-    atomic_write_json(output/"validation_report.json",report)
-    atomic_write_json(marker,{**identity,"completion_status":"complete"})
-    atomic_write_json(output/"revision.complete.json",report)
+    finish_revision(output,identity,report,PRIMARY_ARTIFACTS)
     print("primary eight-detector revision: PASS",flush=True)
 
 

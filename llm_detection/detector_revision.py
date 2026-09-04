@@ -4,9 +4,66 @@ from __future__ import annotations
 import numpy as np
 
 REVISION = "binocular-origin-lrr-constant-v1"
+IMPLEMENTATION_VERSION = "native-falcon-numerics-gate-v2"
 PAIR_METHODS = ("binoculars", "binocular_gap", "binocular_origin")
 ORIGIN_NLL = "binocular_origin_nll"
 ORIGIN_DENOMINATOR = "binocular_origin_denominator"
+
+
+def round_bfloat16(values):
+    """Round finite float32 values to BF16, nearest with ties to even."""
+    values = np.asarray(values, dtype=np.float32)
+    if not np.isfinite(values).all():
+        raise ValueError("nonfinite BF16 input")
+    bits = values.view(np.uint32)
+    rounded = (bits + np.uint32(0x7fff) + ((bits >> 16) & 1)) & np.uint32(0xffff0000)
+    return rounded.view(np.float32)
+
+
+def official_nll_mean(values, upper=None):
+    """BF16 token values, BF16 sum, then BF16 division (batch-one mask=1).
+
+    Saved NLL is already BF16. Round the optional capped values back to that
+    dtype before reduction. The scorer verifies this replay against the actual
+    Torch numerator for EVERY new row; the GPU gate tests capped reductions too.
+    """
+    values = np.asarray(values, dtype=float)
+    if values.ndim != 1 or not len(values) or (values < 0).any():
+        raise ValueError("invalid official numerator values")
+    if upper is not None:
+        if not np.isfinite(upper) or upper < 0:
+            raise ValueError("invalid NLL cap")
+        values = np.minimum(values, upper)
+    values = round_bfloat16(values)
+    total = round_bfloat16(values.sum(dtype=np.float64))
+    return float(round_bfloat16(np.float32(total) / np.float32(len(values))))
+
+
+def structurally_constant_candidate(rows, detector, direction, spec):
+    """Exact full saturation, BEFORE length-dependent floating-point means.
+
+    No tolerance and no new tuning parameter. Origin is excluded: even a
+    constant numerator can retain real information through its denominator.
+    """
+    if not spec or detector == "binocular_origin":
+        return False
+    for row in rows:
+        f = row["token_features"]
+        if detector == "lrr":
+            if not (np.all(-np.asarray(f["logp"]) >= spec["nll_upper"])
+                    and np.all(np.asarray(f["log_rank"]) >= spec["log_rank_upper"])):
+                return False
+        else:
+            if detector in {"binoculars", "binocular_gap"}:
+                values = np.asarray(f["performer_nll"]) - np.asarray(f["observer_to_performer_cross_entropy"])
+            elif detector == "entropy_gap":
+                values = -np.asarray(f["logp"]) - np.asarray(f["entropy"])
+            else:
+                values = np.asarray(f[{"log_likelihood":"logp", "rank":"rank",
+                                       "log_rank":"log_rank", "entropy":"entropy"}[detector]])
+            if not np.all(direction * values <= spec["lower"]):
+                return False
+    return bool(rows)
 
 
 def origin_components(row):
@@ -35,6 +92,9 @@ def origin_score(row, spec=None):
             # Do not manufacture a change solely by re-rounding an unaffected
             # official BF16 score in the float64 analysis code.
             return origin_score(row)
+        if ORIGIN_NLL in row["token_features"]:
+            numerator = official_nll_mean(nll, spec["nll_upper"])
+            return float(np.float32(numerator) / np.float32(denominator))
         return float(np.minimum(nll, spec["nll_upper"]).mean() / denominator)
     # Preserve upstream dtype/reduction exactly for official RAID raw scores.
     if "binocular_origin" in row.get("doc_scores", {}):

@@ -33,7 +33,9 @@ else
           --stage "$REVISION_STAGE" --num-shards "${NUM_SHARDS:-4}"
           --bootstrap-repetitions "${BOOTSTRAP_REPETITIONS:-2000}")
     if [[ "$REVISION_STAGE" == gate ]]; then
+        echo 'Running synthetic regression tests; their PASS messages are not the real RAID gate result.'
         python -m unittest tests.test_detector_revision -v
+        echo 'Starting real full-input tokenizer preflight and bounded GPU pipeline gate.'
         args+=(--reference-metrics "${REFERENCE_METRICS:?Set reviewed upstream metrics.py path}")
     elif [[ "$REVISION_STAGE" == score ]]; then
         args+=(--shard-index "${SLURM_ARRAY_TASK_ID:?Submit a scoring array}")

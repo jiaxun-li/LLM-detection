@@ -9,7 +9,8 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 from llm_detection.detector_revision import (REVISION, ORIGIN_NLL, ORIGIN_DENOMINATOR,
-    constant_clean_scores, origin_score)
+    constant_clean_scores, origin_score, official_nll_mean, round_bfloat16,
+    structurally_constant_candidate)
 from llm_detection.evaluation import (REVISED_METHODS, _candidate_specs,
     detector_raw_score, orientation, oriented_score, tune_clipping_spec, evaluate)
 from RAID.raid_evaluation import (learn_direction, merge_score_rows,
@@ -47,6 +48,9 @@ class RevisionTests(unittest.TestCase):
                 config["tokenizer_revision"],config["dtype"],"cpu",None,
                 trust_remote_code=config["trust_remote_code"])
         self.assertEqual(config["dtype"],"bf16")
+        self.assertFalse(config["trust_remote_code"])
+        self.assertFalse(auto_model.from_pretrained.call_args.kwargs["trust_remote_code"])
+        self.assertFalse(auto_tokenizer.from_pretrained.call_args.kwargs["trust_remote_code"])
         self.assertIs(auto_model.from_pretrained.call_args.kwargs["torch_dtype"],fake_torch.bfloat16)
         self.assertEqual(auto_model.from_pretrained.call_args.kwargs["revision"],"a"*40)
         self.assertEqual(auto_tokenizer.from_pretrained.call_args.kwargs["revision"],"c"*40)
@@ -84,6 +88,48 @@ class RevisionTests(unittest.TestCase):
         self.assertTrue(constant_clean_scores([1.],[1.]))
         self.assertFalse(constant_clean_scores([1.],[np.nextafter(1.,2.)]))
         with self.assertRaises(ValueError):constant_clean_scores([float("nan")],[1.])
+
+    def test_bf16_active_cap_cannot_increase_ratio(self):
+        row={"token_features":{ORIGIN_NLL:[1.,1.0078125]},
+             "doc_scores":{ORIGIN_DENOMINATOR:1.,"binocular_origin":1.}}
+        self.assertEqual(official_nll_mean([1.,1.0078125]),1.)
+        self.assertLessEqual(origin_score(row,{"nll_upper":1.006}),origin_score(row))
+        rng=np.random.default_rng(9)
+        for n in (2,3,50,511):
+            values=round_bfloat16(rng.uniform(0.,30.,n)).astype(float)
+            raw=official_nll_mean(values)
+            row["token_features"][ORIGIN_NLL]=values
+            row["doc_scores"]["binocular_origin"]=raw
+            scores=[origin_score(row,{"nll_upper":float(u)}) for u in np.linspace(0,31,50)]
+            self.assertTrue(all(a<=b for a,b in zip(scores,scores[1:])))
+            self.assertLessEqual(max(scores),raw)
+        self.assertEqual(float(round_bfloat16(1.00390625)),1.)
+        self.assertEqual(float(round_bfloat16(1.01171875)),1.015625)
+
+    def test_fully_saturated_variable_lengths_are_rejected_without_tolerance(self):
+        rows=[{"token_features":{"rank":[1000.]*n},"doc_scores":{"rank":1000.}}
+              for n in (40,50)]
+        spec={"lower":-626.13}
+        scores=[oriented_score(r,"rank",-1,spec) for r in rows]
+        self.assertNotEqual(*scores)  # The original exact-score guard missed this.
+        self.assertTrue(structurally_constant_candidate(rows,"rank",-1,spec))
+        self.assertFalse(structurally_constant_candidate(rows,"rank",-1,{}))
+        diagnostics=[]
+        with patch("llm_detection.evaluation._candidate_specs",return_value=[{},spec]):
+            tune_clipping_spec("rank",-1,rows[:1],rows[1:],rows[1:],[.8],True,diagnostics)
+        self.assertEqual(diagnostics[0]["reason"],"constant_clean_tuning_scores")
+        with patch("RAID.raid_evaluation.candidate_specifications",return_value=[{},spec]):
+            _,diag=select_universal_specification("rank",-1,rows[:1],rows[1:],
+                {"synonym":rows[1:]},require_all_attacks=False,reject_constant=True)
+        self.assertFalse(diag[1]["eligible"])
+        rows[0]["token_features"]["rank"][0]=1.
+        self.assertFalse(structurally_constant_candidate(rows,"rank",-1,spec))
+
+    def test_saturated_lrr_and_variable_origin_denominator(self):
+        rows=[{"token_features":{"logp":[-10.]*n,"log_rank":[8.]*n}} for n in (40,50)]
+        self.assertTrue(structurally_constant_candidate(rows,"lrr",1,
+            {"nll_upper":3.1,"log_rank_upper":4.2}))
+        self.assertFalse(structurally_constant_candidate(rows,"binocular_origin",-1,{"nll_upper":1.}))
 
     def test_primary_rejects_constant_nonempty_candidate_only(self):
         h={"token_features":{"rank":[2.,3.]},"doc_scores":{"rank":2.5}}
@@ -167,13 +213,156 @@ class RevisionTests(unittest.TestCase):
                 append_jsonl(source/"binoculars_scores.jsonl",binoculars_row(row))
             before={p.name:p.read_bytes() for p in source.iterdir()}
             argv=["revision","--workspace",str(root),"--source-run-id","source","--revision-id","new"]
-            with patch("sys.argv",argv),patch("plot_tpr_contamination.plot"):
+            def fake_plot(*args):
+                Path(args[2]).write_bytes(b"test plot")
+            with patch("sys.argv",argv),patch("plot_tpr_contamination.plot",side_effect=fake_plot):
                 main()
             result=root/"results/new/metrics.csv";old_result=result.read_bytes()
             with patch("sys.argv",argv),patch("scripts.reevaluate_detector_revision.evaluate") as calculate:
                 main();calculate.assert_not_called()
             self.assertEqual(before,{p.name:p.read_bytes() for p in source.iterdir()})
             self.assertEqual(old_result,result.read_bytes())
+            # Recover a lost final marker without repeating scientific analysis.
+            (root/"results/new/revision.complete.json").unlink()
+            with patch("sys.argv",argv),patch("scripts.reevaluate_detector_revision.evaluate") as calculate:
+                main();calculate.assert_not_called()
+            result.unlink()
+            with patch("sys.argv",argv),self.assertRaisesRegex(ValueError,"artifact validation"):
+                main()
+
+    def test_completion_recovery_and_artifact_integrity(self):
+        import json
+        from llm_detection.revision_artifacts import finish_revision,resume_completed_revision
+        from llm_detection.io import atomic_write_json
+        for state in ("running","complete"):
+            with self.subTest(state=state),tempfile.TemporaryDirectory() as tmp:
+                root=Path(tmp);(root/"metrics.csv").write_text("a,b\n1,2\n")
+                manifest={"source":"immutable", "completion_status":"running"}
+                finish_revision(root,manifest,{"validation_status":"pass"},["metrics.csv"])
+                (root/"revision.complete.json").unlink()
+                manifest["completion_status"]=state
+                atomic_write_json(root/"revision_manifest.json",manifest)
+                self.assertTrue(resume_completed_revision(root,manifest,["metrics.csv"]))
+                self.assertTrue((root/"revision.complete.json").exists())
+                manifest=json.loads((root/"revision_manifest.json").read_text())
+                (root/"metrics.csv").write_text("corrupted")
+                with self.assertRaisesRegex(ValueError,"artifact validation"):
+                    resume_completed_revision(root,manifest,["metrics.csv"])
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertFalse(resume_completed_revision(tmp,{"completion_status":"running"},["metrics.csv"]))
+
+    def test_full_tokenizer_preflight_and_real_pipeline_probe(self):
+        import json
+        from RAID.revision_gate import preflight_inputs,run_pipeline_probe
+        from llm_detection.io import append_jsonl
+        from tests.test_raid_evaluation import protocol_rows
+        class Tokenizer:
+            pad_token_id=0
+            def __call__(self,texts,**kwargs):
+                return {"input_ids":[[1] if t=="." else [1,2,3] for t in texts]}
+        class Scorer:
+            parity_checks=0
+            def token_count(self,row):return 3
+            def validate_existing_row(self,row):
+                if ORIGIN_NLL not in row["token_features"]:raise ValueError("missing origin")
+            def score_batch(self,rows):
+                self.parity_checks+=len(rows)
+                return [{**r,"num_scored_tokens":2,
+                    "token_features":{ORIGIN_NLL:[1.,3.]},
+                    "doc_scores":{"binocular_origin":1.,ORIGIN_DENOMINATOR:2.}}
+                    for r in rows]
+        rows=protocol_rows()
+        for r in rows:
+            r.update(text="a complete sentence",base_generation_id=r["source_id"])
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);data=root/"data.jsonl";shard=root/"shard.jsonl"
+            original=evaluate_raid(rows,{"bootstrap_repetitions":0})
+            from RAID.raid_evaluation import write_evaluation_artifacts
+            cache=write_evaluation_artifacts(original,root/"old")['contamination_records']
+            for r in rows:
+                for name in (data,shard,root/"falcon_scores.jsonl",root/"binoculars_scores.jsonl"):
+                    append_jsonl(name,r)
+            report,selected=preflight_inputs(data,[shard],Tokenizer(),root/"preflight.json")
+            self.assertEqual(report["rows"],len(rows))
+            self.assertEqual(report["probe_sources"],6)
+            scorer=Scorer()
+            def fake_plots(path):
+                path=Path(path)/"probe.png";path.write_bytes(b"plot");return [path]
+            with patch("RAID.raid_plot.plot_raid",side_effect=fake_plots),patch("RAID.raid_scoring.Throughput"):
+                result=run_pipeline_probe(selected,scorer,root,cache,root,{"evaluation":{}})
+            self.assertTrue(result["resume_unchanged"])
+            self.assertEqual(scorer.parity_checks,len(selected))
+            self.assertEqual(result["counts"]["detectors"],REVISED_METHODS)
+            # A bad text OUTSIDE the chosen probes must still fail preflight.
+            data.unlink();shard.unlink()
+            rows[-1]["text"]="."
+            for r in rows:
+                append_jsonl(data,r);append_jsonl(shard,r)
+            with self.assertRaisesRegex(ValueError,"unscorable"):
+                preflight_inputs(data,[shard],Tokenizer(),root/"preflight.json")
+            self.assertEqual(json.loads((root/"preflight.json").read_text())["unscorable_rows"],1)
+            with self.assertRaisesRegex(ValueError,"duplicate/content mismatch"):
+                preflight_inputs(data,[shard,shard],Tokenizer(),root/"preflight.json")
+
+    def test_raid_revision_runner_gate_score_evaluate_and_recover(self):
+        import json
+        from RAID.revise_detectors import main
+        from llm_detection.io import append_jsonl,atomic_write_json
+        from tests.test_raid_evaluation import protocol_rows
+        from llm_detection.revision_artifacts import RAID_ARTIFACTS
+        from RAID.raid_evaluation import write_evaluation_artifacts
+        class Tokenizer:
+            pad_token_id=0
+            def __call__(self,texts,**kwargs):return {"input_ids":[[1,2,3] for _ in texts]}
+        class Scorer:
+            def __init__(self,*args,**kwargs):self.parity_checks=0
+            def token_count(self,row):return 3
+            def validate_existing_row(self,row):
+                if ORIGIN_NLL not in row['token_features']:raise ValueError('missing origin')
+            def score_batch(self,rows):
+                self.parity_checks+=len(rows)
+                return [{**r,"num_scored_tokens":2,
+                    "token_features":{ORIGIN_NLL:[1.,3.]},
+                    "doc_scores":{"binocular_origin":1.,ORIGIN_DENOMINATOR:2.}}
+                    for r in rows]
+        def fake_plots(directory):
+            paths=[]
+            for name in RAID_ARTIFACTS:
+                if name.endswith('.png'):
+                    path=Path(directory)/name;path.parent.mkdir(parents=True,exist_ok=True)
+                    path.write_bytes(b'test plot');paths.append(path)
+            return paths
+        rows=protocol_rows()
+        for row in rows:
+            row.update(text='a complete sentence',base_generation_id=row['source_id'],
+                binoculars_observer_revision='a'*40,binoculars_performer_revision='b'*40,
+                binoculars_tokenizer_revision='c'*40,binoculars_performer_tokenizer_revision='d'*40)
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);src=root/'runs/raid/source';src.mkdir(parents=True)
+            atomic_write_json(src/'manifest.json',{'completion_status':'complete','protocol_config':{'evaluation':{}}})
+            cache=write_evaluation_artifacts(evaluate_raid(rows,{'bootstrap_repetitions':0}),root/'results/raid/source')
+            for row in rows:
+                for name in ('data.jsonl','data_shards/part-00000-of-00001.jsonl','falcon_scores.jsonl','binoculars_scores.jsonl'):
+                    append_jsonl(src/name,row)
+            reference=root/'reference.py';reference.write_text('# mocked model/reference boundary\n')
+            base=['revision','--workspace',str(root),'--source-run-id','source','--revision-id','new',
+                  '--num-shards','1','--bootstrap-repetitions','2']
+            def run(stage):
+                with patch('sys.argv',base+['--stage',stage,'--reference-metrics',str(reference)]):main()
+            before={str(p.relative_to(src)):p.read_bytes() for p in src.rglob('*') if p.is_file()}
+            with patch('RAID.revision_gate.load_gate_tokenizer',return_value=Tokenizer()), \
+                 patch('RAID.binocular_origin.RAIDBinocularsOriginScorer',Scorer), \
+                 patch('RAID.raid_plot.plot_raid',side_effect=fake_plots),patch('RAID.raid_scoring.Throughput'):
+                run('gate');run('score');run('evaluate')
+                output=root/'results/raid/new'
+                report=json.loads((output/'validation_report.json').read_text())
+                self.assertEqual(report['detectors'],REVISED_METHODS)
+                (output/'revision.complete.json').unlink()
+                with patch('RAID.raid_evaluation.evaluate_raid') as evaluate_mock:
+                    run('evaluate');evaluate_mock.assert_not_called()
+                (output/'metrics.csv').unlink()
+                with self.assertRaisesRegex(ValueError,'artifact validation'):run('evaluate')
+            self.assertEqual(before,{str(p.relative_to(src)):p.read_bytes() for p in src.rglob('*') if p.is_file()})
 
 
 try:
@@ -184,6 +373,15 @@ except ImportError:
 
 @unittest.skipIf(torch is None,"Torch unavailable; run these tests on Delta before the gate")
 class OfficialComponentTests(unittest.TestCase):
+    def test_bf16_replay_matches_torch_capped_sum_division(self):
+        generator=torch.Generator().manual_seed(11)
+        for n in (2,3,50,220,511):
+            values=(torch.rand(n,generator=generator)*30).to(torch.bfloat16)
+            for upper in (0.,1.006,3.17,8.1234,100.):
+                capped=torch.minimum(values,torch.tensor(upper,dtype=torch.bfloat16))
+                expected=float((capped.sum()/n).float())
+                self.assertEqual(official_nll_mean(values.float().numpy(),upper),expected)
+
     def test_final_position_and_eos_mask(self):
         from RAID.binocular_origin import official_components
         p=torch.tensor([[[1.,2.,3.],[3.,2.,1.],[1.,4.,2.]]])

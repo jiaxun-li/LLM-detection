@@ -13,8 +13,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from llm_detection.io import atomic_write_json, iter_jsonl
-from llm_detection.detector_revision import REVISION
+from llm_detection.detector_revision import REVISION, IMPLEMENTATION_VERSION
 from llm_detection.evaluation import REVISED_METHODS
+from llm_detection.revision_artifacts import RAID_ARTIFACTS, finish_revision, resume_completed_revision
 
 
 def identifier(value):
@@ -32,7 +33,8 @@ def implementation_fingerprint():
     names=("RAID/binocular_origin.py","RAID/revise_detectors.py","RAID/raid_evaluation.py",
            "llm_detection/detector_revision.py","llm_detection/evaluation.py",
            "llm_detection/scoring.py","RAID/raid_scoring.py",
-           "scripts/reevaluate_detector_revision.py")
+           "scripts/reevaluate_detector_revision.py", "llm_detection/revision_artifacts.py",
+           "RAID/revision_gate.py")
     return {name:hashlib.sha256((ROOT/name).read_bytes()).hexdigest() for name in names}
 
 
@@ -53,7 +55,7 @@ def scorer_config(source):
         "performer_tokenizer_revision": first["binoculars_performer_tokenizer_revision"],
         "dtype": "bf16", "max_tokens": 512,
         "observer_device": "cuda:0", "performer_device": "cuda:1",
-        "trust_remote_code": True}
+        "trust_remote_code": False}
 
 
 def compact_rows(path):
@@ -88,10 +90,15 @@ def main():
     if source_manifest.get("completion_status") != "complete":
         raise ValueError("source run must be complete")
     config = scorer_config(source)
-    identity = {"revision": REVISION, "source_run_id": args.source_run_id,
+    cache_path = root/"results/raid"/args.source_run_id/"contamination_records.csv"
+    identity = {"revision": REVISION, "implementation_version": IMPLEMENTATION_VERSION,
+        "source_run_id": args.source_run_id,
         "revision_id": args.revision_id, "num_shards": args.num_shards,
         "scorer_config": config,"implementation_sha256":implementation_fingerprint(),
         "source_exclusions":source_manifest.get("source_exclusions"),
+        "contamination_cache":fingerprint(cache_path),
+        "prepared_shards":{str(i):fingerprint(source/"data_shards"/f"part-{i:05d}-of-{args.num_shards:05d}.jsonl")
+                           for i in range(args.num_shards)},
         "source_artifacts": {name:fingerprint(source/name) for name in (
             "manifest.json","data.jsonl","falcon_scores.jsonl","binoculars_scores.jsonl")}}
     destination.mkdir(parents=True, exist_ok=True)
@@ -107,28 +114,34 @@ def main():
         spec = importlib.util.spec_from_file_location("upstream_binoculars_metrics", args.reference_metrics)
         reference = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(reference)
+        from RAID.revision_gate import load_gate_tokenizer, preflight_inputs, run_pipeline_probe
+        preflight, selected = preflight_inputs(source/"data.jsonl",
+            [source/"data_shards"/f"part-{i:05d}-of-{args.num_shards:05d}.jsonl" for i in range(args.num_shards)],
+            load_gate_tokenizer(config), destination/"tokenizer_preflight.json")
         from RAID.binocular_origin import RAIDBinocularsOriginScorer
         scorer = RAIDBinocularsOriginScorer(config, reference_metrics=reference)
-        # One actual row per condition, plus long/Unicode/numeric probes.
-        chosen = {}
-        for row in iter_jsonl(source / "data.jsonl"):
-            role = "human" if row["label"] == "human" else row["attack"]
-            chosen.setdefault(role, row)
-            if len(chosen) == 13: break
-        if len(chosen) != 13:
-            raise ValueError("gate requires all 13 row conditions")
-        probes = list(chosen.values()) + [
+        pipeline = run_pipeline_probe(selected,scorer,source,cache_path,destination,
+                                      source_manifest["protocol_config"])
+        probes = [
             {"text":"This is a long sentence. " * 150},
             {"text":"A\u200b sentence with \u0430 Unicode homoglyph and number 42."}]
         for row in probes: scorer.score_batch([row])
+        if (identity["source_artifacts"] != {name:fingerprint(source/name) for name in identity["source_artifacts"]}
+                or identity["contamination_cache"] != fingerprint(cache_path)
+                or identity["prepared_shards"] != {str(i):fingerprint(source/"data_shards"/f"part-{i:05d}-of-{args.num_shards:05d}.jsonl") for i in range(args.num_shards)}):
+            raise ValueError("source inputs changed during gate")
         atomic_write_json(gate_path, {**identity, "status":"pass",
+            "tokenizer_preflight":preflight, "pipeline_probe":pipeline,
             "parity_checks":scorer.parity_checks,
             "parity_scope":"same_logits_upstream_mean_components",
             "reference_sha256":hashlib.sha256(args.reference_metrics.read_bytes()).hexdigest()})
         print("RAID origin upstream component gate: PASS", flush=True)
         return
     gate = read_json(gate_path)
-    if gate.get("status") != "pass" or gate.get("parity_checks",0)<15 or any(gate.get(k) != v for k,v in identity.items()):
+    if (gate.get("status") != "pass" or gate.get("parity_checks",0)<15
+            or gate.get("tokenizer_preflight",{}).get("status") != "pass"
+            or gate.get("pipeline_probe",{}).get("status") != "pass"
+            or any(gate.get(k) != v for k,v in identity.items())):
         raise ValueError("passing gate does not match this source/configuration")
     if args.stage == "score":
         from RAID.binocular_origin import RAIDBinocularsOriginScorer
@@ -140,17 +153,19 @@ def main():
         scorer = RAIDBinocularsOriginScorer(config)
         count = score_raid_jsonl(prepared, output, scorer,
             {"batch_size":1,"microbatch_size":1,"checkpoint_interval":100})
+        if fingerprint(prepared) != identity["prepared_shards"][str(args.shard_index)]:
+            raise ValueError("prepared shard changed during scoring")
         atomic_write_json(destination/(name+".complete.json"),
             {**identity,"score_rows":count,"input":fingerprint(prepared),"output":fingerprint(output)})
         return
-    if results.exists():
+    if (results/"revision_manifest.json").exists():
         previous=read_json(results/"revision_manifest.json")
         if any(previous.get(k)!=v for k,v in identity.items()) or previous["protocol_config"]["evaluation"]["bootstrap_repetitions"]!=args.bootstrap_repetitions:
             raise ValueError("result directory belongs to a different revision/configuration")
-        if previous.get("completion_status")=="complete":
-            if read_json(results/"revision.complete.json").get("validation_status")!="pass":
-                raise ValueError("completed revision lacks passing marker")
+        if resume_completed_revision(results,previous,RAID_ARTIFACTS):
             print("RAID revision already complete");return
+    elif results.exists() and any(p.name != "revision_manifest.json.tmp" for p in results.iterdir()):
+        raise ValueError("nonempty result directory has no revision identity")
     from RAID.raid_evaluation import evaluate_raid, merge_score_rows, write_evaluation_artifacts
     origin = []
     for index in range(args.num_shards):
@@ -168,7 +183,6 @@ def main():
     if len(origin)!=len(rows):raise ValueError("origin row count mismatch")
     rows = merge_score_rows(rows, origin)
     del origin
-    cache_path = root/"results/raid"/args.source_run_id/"contamination_records.csv"
     with cache_path.open(encoding="utf-8",newline="") as handle:
         cache = list(csv.DictReader(handle))
     config = source_manifest["protocol_config"]
@@ -178,7 +192,7 @@ def main():
     atomic_write_json(results/"revision_manifest.json", {**identity,"completion_status":"running",
         "protocol_config":config,"contamination_cache":fingerprint(cache_path),
         "binocular_origin_context":"output_only_official_512",
-        "clipped_origin_reduction":"float64_mean_capped_nll_over_saved_official_denominator"})
+        "clipped_origin_reduction":"bf16_capped_tokens_sum_division_over_saved_official_denominator"})
     result = evaluate_raid(rows, config, contamination_records=cache)
     write_evaluation_artifacts(result, results)
     counts = result.validation_counts
@@ -186,14 +200,12 @@ def main():
         raise ValueError("revised eight-detector contract failed")
     from RAID.raid_plot import plot_raid
     plot_raid(results)
-    if identity["source_artifacts"]!={name:fingerprint(source/name) for name in identity["source_artifacts"]}:
+    if (identity["source_artifacts"]!={name:fingerprint(source/name) for name in identity["source_artifacts"]}
+            or identity["contamination_cache"] != fingerprint(cache_path)):
         raise ValueError("source artifacts changed during evaluation")
     report = {**counts,"validation_status":"pass","detector_revision":REVISION}
-    atomic_write_json(results/"validation_report.json",report)
     manifest = read_json(results/"revision_manifest.json")
-    manifest["completion_status"]="complete"
-    atomic_write_json(results/"revision_manifest.json",manifest)
-    atomic_write_json(results/"revision.complete.json",report)
+    finish_revision(results,manifest,report,RAID_ARTIFACTS)
     print("RAID eight-detector revision: PASS",flush=True)
 
 
