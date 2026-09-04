@@ -4,7 +4,8 @@ import math
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import numpy as np
 from llm_detection.detector_revision import (REVISION, ORIGIN_NLL, ORIGIN_DENOMINATOR,
@@ -22,6 +23,34 @@ def pair(nll=(1.,3.), ce=(2.,2.)):
 
 
 class RevisionTests(unittest.TestCase):
+    def test_revision_dtype_reaches_real_loader_without_torch_or_downloads(self):
+        from RAID.revise_detectors import scorer_config
+        from llm_detection.scoring import _load_model
+
+        source_row={
+            "binoculars_observer_revision":"a"*40,
+            "binoculars_performer_revision":"b"*40,
+            "binoculars_tokenizer_revision":"c"*40,
+            "binoculars_performer_tokenizer_revision":"d"*40,
+        }
+        with patch("RAID.revise_detectors.iter_jsonl",return_value=iter([source_row])):
+            config=scorer_config(Path("unused-source"))
+        fake_torch=SimpleNamespace(bfloat16=object(),float16=object(),float32=object())
+        tokenizer=SimpleNamespace(pad_token_id=0)
+        model=Mock()
+        model.parameters.return_value=iter([SimpleNamespace(device="cpu")])
+        auto_model=Mock();auto_model.from_pretrained.return_value=model
+        auto_tokenizer=Mock();auto_tokenizer.from_pretrained.return_value=tokenizer
+        with patch("llm_detection.scoring._torch",return_value=fake_torch), \
+             patch("llm_detection.scoring._transformers",return_value=(auto_model,auto_tokenizer)):
+            _load_model("tiiuae/falcon-7b",config["observer_revision"],
+                config["tokenizer_revision"],config["dtype"],"cpu",None,
+                trust_remote_code=config["trust_remote_code"])
+        self.assertEqual(config["dtype"],"bf16")
+        self.assertIs(auto_model.from_pretrained.call_args.kwargs["torch_dtype"],fake_torch.bfloat16)
+        self.assertEqual(auto_model.from_pretrained.call_args.kwargs["revision"],"a"*40)
+        self.assertEqual(auto_tokenizer.from_pretrained.call_args.kwargs["revision"],"c"*40)
+
     def test_gap_retained_and_ratio_is_not_exponential_gap(self):
         row=pair((2.,4.),(2.,2.))
         self.assertEqual(detector_raw_score(row,"binocular_gap"),math.e)

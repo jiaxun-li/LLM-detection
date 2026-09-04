@@ -51,7 +51,7 @@ def scorer_config(source):
     return {"observer_revision": observer, "performer_revision": performer,
         "tokenizer_revision": first["binoculars_tokenizer_revision"],
         "performer_tokenizer_revision": first["binoculars_performer_tokenizer_revision"],
-        "dtype": "bfloat16", "max_tokens": 512,
+        "dtype": "bf16", "max_tokens": 512,
         "observer_device": "cuda:0", "performer_device": "cuda:1",
         "trust_remote_code": True}
 
