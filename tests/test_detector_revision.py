@@ -106,6 +106,18 @@ class RevisionTests(unittest.TestCase):
         self.assertEqual(float(round_bfloat16(1.00390625)),1.)
         self.assertEqual(float(round_bfloat16(1.01171875)),1.015625)
 
+    def test_reported_a100_tensor_division_regression(self):
+        # Measured on Delta: torch 2.11.0+cu128, A100-SXM4-40GB.
+        # Equal BF16 sums/counts imply equal tensor-division results regardless
+        # of how the total is distributed across the token array.
+        cases = ((128,776.,6.0625),(255,1544.,6.0625),(256,1552.,6.0625),
+                 (257,256.,1.),(257,1552.,6.0625),(257,2704.,10.5625),
+                 (259,1568.,6.03125),(341,340.,1.),(511,5344.,10.4375))
+        for n,total,expected in cases:
+            with self.subTest(n=n,total=total):
+                values=np.zeros(n);values[0]=total
+                self.assertEqual(official_nll_mean(values),expected)
+
     def test_fully_saturated_variable_lengths_are_rejected_without_tolerance(self):
         rows=[{"token_features":{"rank":[1000.]*n},"doc_scores":{"rank":1000.}}
               for n in (40,50)]
@@ -373,14 +385,18 @@ except ImportError:
 
 @unittest.skipIf(torch is None,"Torch unavailable; run these tests on Delta before the gate")
 class OfficialComponentTests(unittest.TestCase):
-    def test_bf16_replay_matches_torch_capped_sum_division(self):
+    def test_bf16_replay_with_explicit_bf16_tensor_divisor_on_cpu(self):
         generator=torch.Generator().manual_seed(11)
-        for n in (2,3,50,220,511):
-            values=(torch.rand(n,generator=generator)*30).to(torch.bfloat16)
+        for n in (2,3,50,220,255,256,257,259,341,511):
+            values=(torch.rand(1,n,generator=generator)*30).to(torch.bfloat16)
             for upper in (0.,1.006,3.17,8.1234,100.):
                 capped=torch.minimum(values,torch.tensor(upper,dtype=torch.bfloat16))
-                expected=float((capped.sum()/n).float())
-                self.assertEqual(official_nll_mean(values.float().numpy(),upper),expected)
+                # CPU does not implicitly round the int64 tensor count like
+                # CUDA does: cast explicitly here; the real CUDA test below
+                # uses the untouched int64 mask and the official expression.
+                divisor=torch.ones_like(values,dtype=torch.int64).sum(1).to(torch.bfloat16)
+                expected=float((capped.sum(1)/divisor).float()[0])
+                self.assertEqual(official_nll_mean(values[0].float().numpy(),upper),expected)
 
     def test_final_position_and_eos_mask(self):
         from RAID.binocular_origin import official_components
@@ -396,6 +412,35 @@ class OfficialComponentTests(unittest.TestCase):
         _,b_all,_=official_components(p,q,enc,99)
         np.testing.assert_allclose(b_all,[expected_ce.mean().item()],rtol=1e-6)
         self.assertNotEqual(float(b[0]),float(b_all[0]))
+
+
+@unittest.skipUnless(torch is not None and torch.cuda.is_available(),"CUDA required; no model downloads")
+class CudaReplayTests(unittest.TestCase):
+    def test_official_masked_tensor_reduction_raw_and_capped(self):
+        generator=torch.Generator().manual_seed(17)
+        for n in (2,128,255,256,257,259,341,511):
+            patterns=(torch.ones(1,n),torch.linspace(.1,12,n).reshape(1,n),
+                      torch.rand(1,n,generator=generator)*20)
+            for pattern in patterns:
+                values=pattern.to(dtype=torch.bfloat16,device="cuda")
+                mask=torch.ones_like(values,dtype=torch.int64)
+                saved=values[0].cpu().float().numpy()
+                for upper in (None,0.,1.006,3.17,8.1234,100.):
+                    capped=values if upper is None else torch.minimum(
+                        values,torch.tensor(upper,dtype=values.dtype,device=values.device))
+                    expected=float(((capped*mask).sum(1)/mask.sum(1)).cpu().float()[0])
+                    with self.subTest(n=n,upper=upper):
+                        self.assertEqual(official_nll_mean(saved,upper),expected)
+
+    def test_replay_from_real_bf16_cross_entropy_kernel(self):
+        from RAID.binocular_origin import official_components
+        generator=torch.Generator().manual_seed(51)
+        for n in (256,257,259,341,511):
+            logits=torch.randn(1,n+1,32,generator=generator).to(dtype=torch.bfloat16,device="cuda")
+            ids=torch.randint(0,31,(1,n+1),generator=generator).cuda()
+            enc={"input_ids":ids,"attention_mask":torch.ones_like(ids)}
+            actual,_,nll=official_components(logits,logits,enc,31)
+            self.assertEqual(official_nll_mean(nll[0].cpu().float().numpy()),float(actual[0]))
 
 
 if __name__=="__main__":unittest.main()

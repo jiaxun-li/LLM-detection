@@ -1,7 +1,7 @@
 # Detector amendment: retain gap, add origin, fix LRR, reject constant candidates
 
 Revision ID: `binocular-origin-lrr-constant-v1`.
-Implementation amendment: `native-falcon-numerics-gate-v2`. Use new result and
+Implementation amendment: `native-falcon-numerics-gate-v3`. Use new result and
 RAID revision IDs; do not resume a gate produced by the earlier implementation.
 This is an explicit reanalysis, not a replacement of archived results. The
 legacy entry points/configurations retain their old behavior for reproducibility.
@@ -37,6 +37,13 @@ JSONL, manifest, result, or frozen specification is renamed or overwritten.
   Every new score row checks unmodified replay against its actual Torch numerator;
   the live gate additionally compares capped replay with Torch capped reductions.
   No-clipping and bounds changing no token return the official raw scalar exactly.
+  CUDA tensor division also converts the integer token-count divisor to BF16;
+  the replay must include that conversion. Delta's A100 diagnostic demonstrated
+  that CPU tensor and CUDA scalar division can agree with each other while
+  disagreeing with the official CUDA tensor operation (notably at 257 tokens).
+  v3 corrects that divisor and makes both live capped checks and CUDA regression
+  tests use the exact shifted-attention-mask expression. Raw official scoring
+  and its strict upstream parity check are unchanged. No tolerance is relaxed.
   This replaces the earlier mixed BF16-raw/float64-clipped reduction, which could
   confound clipping with rounding. Primary conditional ratios keep their existing
   float64 aggregation on BOTH raw and clipped sides.
@@ -163,6 +170,14 @@ exact constant rejection, eight-detector evaluation and cached-rate parity.
 Torch-dependent component tests and the live upstream gate must pass on Delta;
 local CPU tests alone do not establish GPU/model parity. The local environment
 does not contain Torch, so no new inference has been performed here.
+
+After publishing v3, first run `tests.test_detector_revision.CudaReplayTests`
+inside a small one-GPU allocation. These tests require no checkpoints or dataset
+files and compare actual CUDA masked reductions, both raw and capped, plus
+synthetic BF16 cross-entropy outputs. Confirm CUDA is available: skipped tests
+are not a pass. Only then retry the RAID gate with a new revision ID. Previously
+completed v2 primary conditional evaluations do not require another run solely
+for this CUDA divisor correction; their float64 calculation is unchanged.
 
 This is a disclosed methodological amendment after observing existing results.
 Retain the historical tables and report the revised protocol; improved outcomes

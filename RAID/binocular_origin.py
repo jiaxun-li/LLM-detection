@@ -92,7 +92,11 @@ class RAIDBinocularsOriginScorer(RAIDBinocularsScorer):
         ds = row["doc_scores"]
         if (numerator != ds["binocular_origin_numerator"] or
                 float(np.float32(numerator)/np.float32(ds[ORIGIN_DENOMINATOR])) != ds["binocular_origin"]):
-            raise ValueError("saved official numerator/ratio disagrees with BF16 replay")
+            raise ValueError(
+                "saved official numerator/ratio disagrees with CUDA BF16 replay: "
+                f"tokens={len(values)}, official_numerator={ds['binocular_origin_numerator']!r}, "
+                f"replayed_numerator={numerator!r}, denominator={ds[ORIGIN_DENOMINATOR]!r}, "
+                f"official_ratio={ds['binocular_origin']!r}")
 
     def score_batch(self, rows):
         torch = _torch()
@@ -122,9 +126,13 @@ class RAIDBinocularsOriginScorer(RAIDBinocularsScorer):
                                   float(saved_nll.max()) - 0.0001):
                         upper = max(0., upper)
                         capped = torch.minimum(nll, torch.tensor(upper,dtype=nll.dtype,device=nll.device))
-                        actual = float((capped.sum(1)/capped.shape[1]).cpu().float()[0])
+                        shifted_mask = performed["attention_mask"][...,1:].contiguous()
+                        actual = float(((capped*shifted_mask).sum(1)/shifted_mask.sum(1)).cpu().float()[0])
                         if official_nll_mean(saved_nll,upper) != actual:
-                            raise ValueError("capped BF16 numerator replay failed")
+                            raise ValueError(
+                                f"capped CUDA BF16 numerator replay failed: tokens={len(saved_nll)}, "
+                                f"upper={upper!r}, actual={actual!r}, "
+                                f"replay={official_nll_mean(saved_nll,upper)!r}")
                     self.parity_checks += 1
                 output = {k: v for k, v in row.items() if k not in {"text", "prompt"}}
                 output.update({

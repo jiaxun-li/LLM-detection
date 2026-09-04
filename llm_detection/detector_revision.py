@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 
 REVISION = "binocular-origin-lrr-constant-v1"
-IMPLEMENTATION_VERSION = "native-falcon-numerics-gate-v2"
+IMPLEMENTATION_VERSION = "native-falcon-numerics-gate-v3"
 PAIR_METHODS = ("binoculars", "binocular_gap", "binocular_origin")
 ORIGIN_NLL = "binocular_origin_nll"
 ORIGIN_DENOMINATOR = "binocular_origin_denominator"
@@ -21,11 +21,14 @@ def round_bfloat16(values):
 
 
 def official_nll_mean(values, upper=None):
-    """BF16 token values, BF16 sum, then BF16 division (batch-one mask=1).
+    """Replay CUDA BF16 tensor division, NOT CPU/scalar division.
 
     Saved NLL is already BF16. Round the optional capped values back to that
     dtype before reduction. The scorer verifies this replay against the actual
     Torch numerator for EVERY new row; the GPU gate tests capped reductions too.
+    CUDA converts the integer mask-count tensor to BF16 for this operation.
+    Odd counts above 256 can round (257 -> 256, 259 -> 260). A Python scalar
+    divisor follows a different kernel path and must not be used as reference.
     """
     values = np.asarray(values, dtype=float)
     if values.ndim != 1 or not len(values) or (values < 0).any():
@@ -36,7 +39,8 @@ def official_nll_mean(values, upper=None):
         values = np.minimum(values, upper)
     values = round_bfloat16(values)
     total = round_bfloat16(values.sum(dtype=np.float64))
-    return float(round_bfloat16(np.float32(total) / np.float32(len(values))))
+    divisor = round_bfloat16(len(values))
+    return float(round_bfloat16(np.float32(total) / np.float32(divisor)))
 
 
 def structurally_constant_candidate(rows, detector, direction, spec):
