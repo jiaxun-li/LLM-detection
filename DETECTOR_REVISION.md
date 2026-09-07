@@ -1,7 +1,7 @@
 # Detector amendment: retain gap, add origin, fix LRR, reject constant candidates
 
 Revision ID: `binocular-origin-lrr-constant-v1`.
-Implementation amendment: `native-falcon-numerics-gate-v3`. Use new result and
+Implementation amendment: `official-score-anchored-clipping-v4`. Use new result and
 RAID revision IDs; do not resume a gate produced by the earlier implementation.
 This is an explicit reanalysis, not a replacement of archived results. The
 legacy entry points/configurations retain their old behavior for reproducibility.
@@ -30,23 +30,20 @@ JSONL, manifest, result, or frozen specification is renamed or overwritten.
   [metrics implementation](https://github.com/ahans30/Binoculars/blob/main/binoculars/metrics.py).
   A new, separately named score pack is necessary: the legacy CE arrays omit
   the final position. Legacy gap scores continue using the old arrays.
-- RAID official raw reductions retain upstream rounding. The custom clipped
-  numerator now uses the SAME BF16 token/sum/division rounding and final float32
-  ratio as raw, with the saved official denominator unchanged. The analysis
-  replays those operations from saved token NLL using NumPy (no new inference).
-  Every new score row checks unmodified replay against its actual Torch numerator;
-  the live gate additionally compares capped replay with Torch capped reductions.
-  No-clipping and bounds changing no token return the official raw scalar exactly.
-  CUDA tensor division also converts the integer token-count divisor to BF16;
-  the replay must include that conversion. Delta's A100 diagnostic demonstrated
-  that CPU tensor and CUDA scalar division can agree with each other while
-  disagreeing with the official CUDA tensor operation (notably at 257 tokens).
-  v3 corrects that divisor and makes both live capped checks and CUDA regression
-  tests use the exact shifted-attention-mask expression. Raw official scoring
-  and its strict upstream parity check are unchanged. No tolerance is relaxed.
-  This replaces the earlier mixed BF16-raw/float64-clipped reduction, which could
-  confound clipping with rounding. Primary conditional ratios keep their existing
-  float64 aggregation on BOTH raw and clipped sides.
+- RAID official raw numerator, denominator, and ratio retain the upstream CUDA
+  BF16 values exactly. Serialized BF16 token losses do not encode CUDA's parallel
+  summation order and therefore cannot always reconstruct its document numerator
+  bit-for-bit. The custom clipped numerator is consequently anchored to the saved
+  official numerator and applies a deterministic float64 Winsorization delta:
+  `A_clip = A_official + mean(min(NLL,U)) - mean(NLL)`, bounded to `[0,A_official]`.
+  No-clipping and bounds changing no token return the official raw scalar exactly;
+  active clipping cannot increase its numerator. The denominator remains the
+  saved official denominator and the final ratio uses float32 division. This is
+  mathematically the ordinary clipped mean in exact arithmetic, while avoiding
+  a false claim that NumPy reproduces hardware-dependent CUDA reduction order.
+  The observed 511-token production counterexample is a regression fixture.
+  Primary conditional ratios keep their existing float64 aggregation on BOTH
+  raw and clipped sides and are unaffected by this amendment.
 - LRR direction is fixed to `+1` (larger = machine) in revised runs. Formula,
   competition-rank tie handling, and two-component caps are unchanged. Other
   learned directions remain unchanged; origin is fixed to `-1`.
@@ -80,9 +77,9 @@ JSONL, manifest, result, or frozen specification is renamed or overwritten.
    resume, joining saved Falcon/gap packs, evaluation and plotting. These tiny
    gate results are engineering checks only and never supply full-run thresholds.
    Compares components on identical logits against separately obtained upstream
-   `metrics.py`, including two extra long/Unicode probes and capped BF16 replay.
+   `metrics.py`, including two extra long/Unicode probes.
    Records reference SHA256 and immutable model/tokenizer revisions. This gate
-   checks component parity, not equality of the entire RAID published table.
+   checks raw component parity, not equality of the entire RAID published table.
 3. After the gate passes, `--stage score` as four shards. Reads existing prepared
    shards, loads only the Falcon pair, writes `runs/raid_origin/<new-id>/`.
    No new dataset download/index, preparation, or Falcon single-model scoring.
@@ -114,6 +111,9 @@ Environment variables:
 - `BOOTSTRAP_REPETITIONS`: defaults to 2000.
 - `NUM_SHARDS`: defaults to 4; must match the existing prepared shard layout.
 - `REFERENCE_METRICS`: gate only, path to the reviewed upstream `metrics.py`.
+- `ADOPT_ORIGIN_RUN_ID`: score only; optionally copy a stopped earlier revision's
+  raw origin shard after pre/post fingerprint and content-hash checks, then validate
+  every adopted row and score only missing keys. Adoption is recorded per shard.
 
 Submission templates (not auto-submitted; set IDs and review resources first):
 
@@ -171,7 +171,7 @@ Torch-dependent component tests and the live upstream gate must pass on Delta;
 local CPU tests alone do not establish GPU/model parity. The local environment
 does not contain Torch, so no new inference has been performed here.
 
-After publishing v3, retry the existing RAID gate with a new revision ID; do not
+After publishing v4, retry the existing RAID gate with a new revision ID; do not
 submit a separate CUDA diagnostic. The wrapper uses the standard Delta module
 setup, checks the stage and reference-file arguments, and runs
 `scripts/check_detector_revision_gate.py` before full-input tokenization or model

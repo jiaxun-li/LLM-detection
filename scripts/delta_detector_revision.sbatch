@@ -50,6 +50,9 @@ else
         args+=(--reference-metrics "$REFERENCE_METRICS")
     elif [[ "$REVISION_STAGE" == score ]]; then
         args+=(--shard-index "${SLURM_ARRAY_TASK_ID:?Submit a scoring array}")
+        if [[ -n "${ADOPT_ORIGIN_RUN_ID:-}" ]]; then
+            args+=(--adopt-origin-run-id "$ADOPT_ORIGIN_RUN_ID")
+        fi
     fi
     srun python -u RAID/revise_detectors.py "${args[@]}"
 fi

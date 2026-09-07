@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 from llm_detection.detector_revision import (REVISION, ORIGIN_NLL, ORIGIN_DENOMINATOR,
-    constant_clean_scores, origin_score, official_nll_mean, round_bfloat16,
+    anchored_nll_mean, constant_clean_scores, origin_score, official_nll_mean, round_bfloat16,
     structurally_constant_candidate)
 from llm_detection.evaluation import (REVISED_METHODS, _candidate_specs,
     detector_raw_score, orientation, oriented_score, tune_clipping_spec, evaluate)
@@ -71,7 +71,8 @@ class RevisionTests(unittest.TestCase):
     def test_official_components_never_use_legacy_gap_arrays(self):
         row=pair((900.,900.),(800.,800.))
         row["token_features"][ORIGIN_NLL]=[1.,9.]
-        row["doc_scores"].update({ORIGIN_DENOMINATOR:2.,"binocular_origin":2.5})
+        row["doc_scores"].update({ORIGIN_DENOMINATOR:2.,
+            "binocular_origin_numerator":5.,"binocular_origin":2.5})
         self.assertEqual(origin_score(row),2.5)
         self.assertEqual(origin_score(row,{"nll_upper":3}),1.)
         row["doc_scores"]["binocular_origin"]=2.5001
@@ -91,7 +92,8 @@ class RevisionTests(unittest.TestCase):
 
     def test_bf16_active_cap_cannot_increase_ratio(self):
         row={"token_features":{ORIGIN_NLL:[1.,1.0078125]},
-             "doc_scores":{ORIGIN_DENOMINATOR:1.,"binocular_origin":1.}}
+             "doc_scores":{ORIGIN_DENOMINATOR:1.,
+                 "binocular_origin_numerator":1.,"binocular_origin":1.}}
         self.assertEqual(official_nll_mean([1.,1.0078125]),1.)
         self.assertLessEqual(origin_score(row,{"nll_upper":1.006}),origin_score(row))
         rng=np.random.default_rng(9)
@@ -99,12 +101,30 @@ class RevisionTests(unittest.TestCase):
             values=round_bfloat16(rng.uniform(0.,30.,n)).astype(float)
             raw=official_nll_mean(values)
             row["token_features"][ORIGIN_NLL]=values
-            row["doc_scores"]["binocular_origin"]=raw
+            row["doc_scores"].update(
+                binocular_origin_numerator=raw,binocular_origin=raw)
             scores=[origin_score(row,{"nll_upper":float(u)}) for u in np.linspace(0,31,50)]
             self.assertTrue(all(a<=b for a,b in zip(scores,scores[1:])))
             self.assertLessEqual(max(scores),raw)
         self.assertEqual(float(round_bfloat16(1.00390625)),1.)
         self.assertEqual(float(round_bfloat16(1.01171875)),1.015625)
+
+    def test_official_score_anchoring_handles_unreplayable_cuda_reduction(self):
+        # Observed on Delta for a 511-token production row: CUDA's official
+        # reduction and a serialized-token reduction differed by one BF16 step.
+        values=np.full(511,2.234375)
+        official=2.21875
+        denominator=2.390625
+        row={"token_features":{ORIGIN_NLL:values},"doc_scores":{
+            "binocular_origin_numerator":official,
+            ORIGIN_DENOMINATOR:denominator,
+            "binocular_origin":float(np.float32(official)/np.float32(denominator))}}
+        self.assertEqual(origin_score(row),row["doc_scores"]["binocular_origin"])
+        self.assertEqual(origin_score(row,{"nll_upper":3.}),origin_score(row))
+        clipped=origin_score(row,{"nll_upper":2.})
+        expected=anchored_nll_mean(values,official,2.)
+        self.assertEqual(clipped,float(np.float32(expected)/np.float32(denominator)))
+        self.assertLess(clipped,origin_score(row))
 
     def test_reported_a100_tensor_division_regression(self):
         # Measured on Delta: torch 2.11.0+cu128, A100-SXM4-40GB.
@@ -170,13 +190,27 @@ class RevisionTests(unittest.TestCase):
         self.assertIn("binocular_origin",merged[0]["doc_scores"])
         with self.assertRaises(ValueError):merge_score_rows([first],[second,second])
 
+    def test_score_pack_adoption_is_atomic_and_content_checked(self):
+        from RAID.revise_detectors import adopt_score_pack
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);source=root/"old.jsonl";destination=root/"new.jsonl"
+            source.write_text('{"row": 1}\n{"row": 2}\n',encoding="utf-8")
+            provenance=adopt_score_pack(source,destination)
+            self.assertEqual(source.read_bytes(),destination.read_bytes())
+            self.assertEqual(provenance["content"]["sha256"],
+                             __import__("hashlib").sha256(source.read_bytes()).hexdigest())
+            with self.assertRaisesRegex(ValueError,"existing destination"):
+                adopt_score_pack(source,destination)
+
     def test_raid_eight_detectors_and_cached_rate_parity(self):
         from tests.test_raid_evaluation import protocol_rows
         rows=protocol_rows()
         for r in rows:
             nll=r["token_features"]["performer_nll"]
             r["token_features"][ORIGIN_NLL]=list(nll)
-            r["doc_scores"]={ORIGIN_DENOMINATOR:1.,"binocular_origin":float(np.mean(nll))}
+            mean=float(np.mean(nll))
+            r["doc_scores"]={ORIGIN_DENOMINATOR:1.,
+                "binocular_origin_numerator":mean,"binocular_origin":mean}
         config={"detector_revision":REVISION,"bootstrap_repetitions":0,"rate_adaptive_min_tuning_rows":1}
         result=evaluate_raid(rows,config)
         self.assertEqual(result.validation_counts["detectors"],REVISED_METHODS)
@@ -281,7 +315,8 @@ class RevisionTests(unittest.TestCase):
                 self.parity_checks+=len(rows)
                 return [{**r,"num_scored_tokens":2,
                     "token_features":{ORIGIN_NLL:[1.,3.]},
-                    "doc_scores":{"binocular_origin":1.,ORIGIN_DENOMINATOR:2.}}
+                    "doc_scores":{"binocular_origin":1.,
+                        "binocular_origin_numerator":2.,ORIGIN_DENOMINATOR:2.}}
                     for r in rows]
         rows=protocol_rows()
         for r in rows:
@@ -335,7 +370,8 @@ class RevisionTests(unittest.TestCase):
                 self.parity_checks+=len(rows)
                 return [{**r,"num_scored_tokens":2,
                     "token_features":{ORIGIN_NLL:[1.,3.]},
-                    "doc_scores":{"binocular_origin":1.,ORIGIN_DENOMINATOR:2.}}
+                    "doc_scores":{"binocular_origin":1.,
+                        "binocular_origin_numerator":2.,ORIGIN_DENOMINATOR:2.}}
                     for r in rows]
         def fake_plots(directory):
             paths=[]

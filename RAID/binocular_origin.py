@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from llm_detection.detector_revision import ORIGIN_NLL, ORIGIN_DENOMINATOR, official_nll_mean
+from llm_detection.detector_revision import ORIGIN_NLL, ORIGIN_DENOMINATOR
 from RAID.raid_scoring import RAIDBinocularsScorer, _torch
 
 SCHEMA = "raid-binocular-origin-official-v1"
@@ -84,18 +84,18 @@ class RAIDBinocularsOriginScorer(RAIDBinocularsScorer):
         if (values.ndim != 1 or not len(values) or len(values) != row["num_scored_tokens"]
                 or not np.isfinite(values).all() or (values < 0).any()):
             raise ValueError("invalid binocular-origin token features")
-        for key in ("binocular_origin", ORIGIN_DENOMINATOR):
+        for key in ("binocular_origin", "binocular_origin_numerator", ORIGIN_DENOMINATOR):
             value=row["doc_scores"][key]
             if not np.isfinite(value) or value < 0 or (key==ORIGIN_DENOMINATOR and value==0):
                 raise ValueError("invalid binocular-origin document score")
-        numerator = official_nll_mean(values)
         ds = row["doc_scores"]
-        if (numerator != ds["binocular_origin_numerator"] or
-                float(np.float32(numerator)/np.float32(ds[ORIGIN_DENOMINATOR])) != ds["binocular_origin"]):
+        expected = float(np.float32(ds["binocular_origin_numerator"])
+                         / np.float32(ds[ORIGIN_DENOMINATOR]))
+        if expected != ds["binocular_origin"]:
             raise ValueError(
-                "saved official numerator/ratio disagrees with CUDA BF16 replay: "
+                "saved official Binoculars components disagree: "
                 f"tokens={len(values)}, official_numerator={ds['binocular_origin_numerator']!r}, "
-                f"replayed_numerator={numerator!r}, denominator={ds[ORIGIN_DENOMINATOR]!r}, "
+                f"denominator={ds[ORIGIN_DENOMINATOR]!r}, expected_ratio={expected!r}, "
                 f"official_ratio={ds['binocular_origin']!r}")
 
     def score_batch(self, rows):
@@ -119,20 +119,6 @@ class RAIDBinocularsOriginScorer(RAIDBinocularsScorer):
                     ref_b = self.reference_metrics.entropy(p, q, performed, self.tokenizer.pad_token_id)
                     if not np.array_equal(a, ref_a) or not np.array_equal(b, ref_b):
                         raise ValueError("upstream Binoculars component parity failed")
-                    saved_nll = nll[0].cpu().float().numpy()
-                    # Check the analysis-time BF16 replay against actual Torch
-                    # capped reductions, including a nonrepresentable bound.
-                    for upper in (float(saved_nll.min()), float(np.quantile(saved_nll,.9)),
-                                  float(saved_nll.max()) - 0.0001):
-                        upper = max(0., upper)
-                        capped = torch.minimum(nll, torch.tensor(upper,dtype=nll.dtype,device=nll.device))
-                        shifted_mask = performed["attention_mask"][...,1:].contiguous()
-                        actual = float(((capped*shifted_mask).sum(1)/shifted_mask.sum(1)).cpu().float()[0])
-                        if official_nll_mean(saved_nll,upper) != actual:
-                            raise ValueError(
-                                f"capped CUDA BF16 numerator replay failed: tokens={len(saved_nll)}, "
-                                f"upper={upper!r}, actual={actual!r}, "
-                                f"replay={official_nll_mean(saved_nll,upper)!r}")
                     self.parity_checks += 1
                 output = {k: v for k, v in row.items() if k not in {"text", "prompt"}}
                 output.update({

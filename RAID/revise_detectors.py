@@ -7,6 +7,8 @@ import csv
 import hashlib
 import importlib.util
 import json
+import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -67,6 +69,30 @@ def compact_rows(path):
                                if k in EVALUATION_TOKEN_FEATURES}}
 
 
+def adopt_score_pack(adopted, output):
+    """Atomically copy a stopped score pack with pre/post content validation."""
+    from llm_detection.revision_artifacts import artifact_digest
+    adopted, output = Path(adopted), Path(output)
+    if output.exists():
+        raise ValueError("refusing to adopt over an existing destination score pack")
+    if not adopted.is_file() or not adopted.stat().st_size:
+        return None
+    before = fingerprint(adopted)
+    digest = artifact_digest(adopted)
+    temporary = output.with_suffix(output.suffix+".adopting")
+    output.parent.mkdir(parents=True,exist_ok=True)
+    try:
+        shutil.copyfile(adopted,temporary)
+        if fingerprint(adopted) != before or artifact_digest(adopted) != digest:
+            raise ValueError("adopted score pack changed while it was copied")
+        if artifact_digest(temporary) != digest:
+            raise ValueError("adopted score-pack copy failed content verification")
+        os.replace(temporary,output)
+    finally:
+        if temporary.exists():temporary.unlink()
+    return {"source_revision_id":None,"source":before,"content":digest}
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--workspace", type=Path, default=Path("."))
@@ -77,9 +103,14 @@ def main():
     p.add_argument("--num-shards", type=int, default=4)
     p.add_argument("--shard-index", type=int, default=0)
     p.add_argument("--bootstrap-repetitions", type=int, default=2000)
+    p.add_argument("--adopt-origin-run-id", type=identifier)
     args = p.parse_args()
     if args.source_run_id == args.revision_id:
         raise ValueError("use a NEW revision ID")
+    if args.adopt_origin_run_id == args.revision_id:
+        raise ValueError("cannot adopt an origin pack from the destination revision")
+    if args.adopt_origin_run_id and args.stage != "score":
+        raise ValueError("origin-pack adoption is score-stage only")
     if args.num_shards < 1 or not 0 <= args.shard_index < args.num_shards or args.bootstrap_repetitions < 0:
         raise ValueError("invalid shard or bootstrap count")
     root = args.workspace.resolve()
@@ -150,13 +181,20 @@ def main():
         prepared = source / "data_shards" / (name + ".jsonl")
         # No preparation, hashing of the RAID CSV, or target-model rescoring.
         output = destination / (name + ".jsonl")
+        adoption = None
+        if args.adopt_origin_run_id and not output.exists():
+            adopted = root/"runs/raid_origin"/args.adopt_origin_run_id/(name+".jsonl")
+            adoption = adopt_score_pack(adopted,output)
+            if adoption is not None:
+                adoption["source_revision_id"] = args.adopt_origin_run_id
         scorer = RAIDBinocularsOriginScorer(config)
         count = score_raid_jsonl(prepared, output, scorer,
             {"batch_size":1,"microbatch_size":1,"checkpoint_interval":100})
         if fingerprint(prepared) != identity["prepared_shards"][str(args.shard_index)]:
             raise ValueError("prepared shard changed during scoring")
         atomic_write_json(destination/(name+".complete.json"),
-            {**identity,"score_rows":count,"input":fingerprint(prepared),"output":fingerprint(output)})
+            {**identity,"score_rows":count,"input":fingerprint(prepared),
+             "output":fingerprint(output),"adoption":adoption})
         return
     if (results/"revision_manifest.json").exists():
         previous=read_json(results/"revision_manifest.json")
@@ -168,6 +206,7 @@ def main():
         raise ValueError("nonempty result directory has no revision identity")
     from RAID.raid_evaluation import evaluate_raid, merge_score_rows, write_evaluation_artifacts
     origin = []
+    origin_adoption = {}
     for index in range(args.num_shards):
         name = f"part-{index:05d}-of-{args.num_shards:05d}"
         marker = read_json(destination/(name+".complete.json"))
@@ -175,6 +214,7 @@ def main():
         prepared = source/"data_shards"/(name+".jsonl")
         if any(marker.get(k)!=v for k,v in identity.items()) or marker["output"]!=fingerprint(path) or marker["input"]!=fingerprint(prepared):
             raise ValueError("shard identity/provenance mismatch")
+        origin_adoption[str(index)] = marker.get("adoption")
         part = list(compact_rows(path))
         if len(part)!=marker["score_rows"]:raise ValueError("shard count mismatch")
         origin.extend(part)
@@ -192,7 +232,8 @@ def main():
     atomic_write_json(results/"revision_manifest.json", {**identity,"completion_status":"running",
         "protocol_config":config,"contamination_cache":fingerprint(cache_path),
         "binocular_origin_context":"output_only_official_512",
-        "clipped_origin_reduction":"bf16_capped_tokens_sum_division_over_saved_official_denominator"})
+        "clipped_origin_reduction":"official_numerator_plus_float64_winsorization_delta",
+        "origin_score_adoption":origin_adoption})
     result = evaluate_raid(rows, config, contamination_records=cache)
     write_evaluation_artifacts(result, results)
     counts = result.validation_counts

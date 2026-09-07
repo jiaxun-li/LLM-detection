@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 
 REVISION = "binocular-origin-lrr-constant-v1"
-IMPLEMENTATION_VERSION = "native-falcon-numerics-gate-v3"
+IMPLEMENTATION_VERSION = "official-score-anchored-clipping-v4"
 PAIR_METHODS = ("binoculars", "binocular_gap", "binocular_origin")
 ORIGIN_NLL = "binocular_origin_nll"
 ORIGIN_DENOMINATOR = "binocular_origin_denominator"
@@ -24,8 +24,10 @@ def official_nll_mean(values, upper=None):
     """Replay CUDA BF16 tensor division, NOT CPU/scalar division.
 
     Saved NLL is already BF16. Round the optional capped values back to that
-    dtype before reduction. The scorer verifies this replay against the actual
-    Torch numerator for EVERY new row; the GPU gate tests capped reductions too.
+    dtype before reduction. This helper captures tested CUDA cases but is not
+    used to reconstruct production raw numerators: serialized values do not
+    preserve CUDA's parallel summation order. Production clipping uses
+    ``anchored_nll_mean`` below.
     CUDA converts the integer mask-count tensor to BF16 for this operation.
     Odd counts above 256 can round (257 -> 256, 259 -> 260). A Python scalar
     divisor follows a different kernel path and must not be used as reference.
@@ -41,6 +43,28 @@ def official_nll_mean(values, upper=None):
     total = round_bfloat16(values.sum(dtype=np.float64))
     divisor = round_bfloat16(len(values))
     return float(round_bfloat16(np.float32(total) / np.float32(divisor)))
+
+
+def anchored_nll_mean(values, official_numerator, upper):
+    """Apply a deterministic clipping delta to an official CUDA numerator.
+
+    The serialized BF16 losses do not encode CUDA's parallel reduction order,
+    so they cannot always reconstruct the official numerator bit-for-bit.  Use
+    them only to calculate the float64 clipping delta and anchor that delta to
+    the stored official value.
+    """
+    values = np.asarray(values, dtype=float)
+    official_numerator = float(official_numerator)
+    upper = float(upper)
+    if (values.ndim != 1 or not len(values) or not np.isfinite(values).all()
+            or (values < 0).any() or not np.isfinite(official_numerator)
+            or official_numerator < 0 or not np.isfinite(upper) or upper < 0):
+        raise ValueError("invalid anchored numerator inputs")
+    delta = float(np.minimum(values, upper).mean(dtype=np.float64)
+                  - values.mean(dtype=np.float64))
+    # Clipping cannot increase an NLL numerator.  The lower guard only protects
+    # the ratio from a tiny negative value caused by anchoring rounded raw data.
+    return min(official_numerator, max(0.0, official_numerator + delta))
 
 
 def structurally_constant_candidate(rows, detector, direction, spec):
@@ -97,7 +121,9 @@ def origin_score(row, spec=None):
             # official BF16 score in the float64 analysis code.
             return origin_score(row)
         if ORIGIN_NLL in row["token_features"]:
-            numerator = official_nll_mean(nll, spec["nll_upper"])
+            numerator = anchored_nll_mean(
+                nll, row["doc_scores"]["binocular_origin_numerator"],
+                spec["nll_upper"])
             return float(np.float32(numerator) / np.float32(denominator))
         return float(np.minimum(nll, spec["nll_upper"]).mean() / denominator)
     # Preserve upstream dtype/reduction exactly for official RAID raw scores.
