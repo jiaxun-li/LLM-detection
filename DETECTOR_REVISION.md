@@ -1,8 +1,11 @@
 # Detector amendment: retain gap, add origin, fix LRR, reject constant candidates
 
 Revision ID: `binocular-origin-lrr-constant-v1`.
-Implementation amendment: `official-score-anchored-clipping-v4`. Use new result and
+Implementation amendment: `official-score-anchored-clipping-v4.1`. Use new result and
 RAID revision IDs; do not resume a gate produced by the earlier implementation.
+Version 4.1 preserves the saved official numerator when Falcon and Binoculars
+score packs are merged; version 4 omitted that field and could not evaluate an
+active origin-clipping candidate after otherwise successful gate scoring.
 This is an explicit reanalysis, not a replacement of archived results. The
 legacy entry points/configurations retain their old behavior for reproducibility.
 Use the new entry points below to apply all four changes together. No archived
@@ -171,7 +174,7 @@ Torch-dependent component tests and the live upstream gate must pass on Delta;
 local CPU tests alone do not establish GPU/model parity. The local environment
 does not contain Torch, so no new inference has been performed here.
 
-After publishing v4, retry the existing RAID gate with a new revision ID; do not
+After publishing v4.1, retry the existing RAID gate with a new revision ID; do not
 submit a separate CUDA diagnostic. The wrapper uses the standard Delta module
 setup, checks the stage and reference-file arguments, and runs
 `scripts/check_detector_revision_gate.py` before full-input tokenization or model

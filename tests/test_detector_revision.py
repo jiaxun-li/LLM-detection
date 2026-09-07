@@ -9,8 +9,8 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 from llm_detection.detector_revision import (REVISION, ORIGIN_NLL, ORIGIN_DENOMINATOR,
-    anchored_nll_mean, constant_clean_scores, origin_score, official_nll_mean, round_bfloat16,
-    structurally_constant_candidate)
+    ORIGIN_NUMERATOR, anchored_nll_mean, constant_clean_scores, origin_score,
+    official_nll_mean, round_bfloat16, structurally_constant_candidate)
 from llm_detection.evaluation import (REVISED_METHODS, _candidate_specs,
     detector_raw_score, orientation, oriented_score, tune_clipping_spec, evaluate)
 from RAID.raid_evaluation import (learn_direction, merge_score_rows,
@@ -184,10 +184,17 @@ class RevisionTests(unittest.TestCase):
 
     def test_merge_pure_and_duplicate_rejected(self):
         first={"row_key":"a",**pair()};second=copy.deepcopy(first)
-        second["doc_scores"]["binocular_origin"]=1.
+        second["token_features"][ORIGIN_NLL]=[1.,3.]
+        second["doc_scores"].update({
+            "binocular_origin":1., ORIGIN_NUMERATOR:2., ORIGIN_DENOMINATOR:2.})
         merged=merge_score_rows([first],[second])
         self.assertNotIn("binocular_origin",first["doc_scores"])
         self.assertIn("binocular_origin",merged[0]["doc_scores"])
+        self.assertEqual(merged[0]["doc_scores"][ORIGIN_NUMERATOR],2.)
+        self.assertEqual(merged[0]["doc_scores"][ORIGIN_DENOMINATOR],2.)
+        # Regression for the live-gate failure: an active official clipping
+        # candidate must remain evaluable after Falcon/Binoculars merging.
+        self.assertEqual(origin_score(merged[0],{"nll_upper":1.}),.5)
         with self.assertRaises(ValueError):merge_score_rows([first],[second,second])
 
     def test_score_pack_adoption_is_atomic_and_content_checked(self):

@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from llm_detection.detector_revision import ORIGIN_NLL, ORIGIN_DENOMINATOR
+from llm_detection.detector_revision import (ORIGIN_NLL, ORIGIN_DENOMINATOR,
+    ORIGIN_NUMERATOR)
 from RAID.raid_scoring import RAIDBinocularsScorer, _torch
 
 SCHEMA = "raid-binocular-origin-official-v1"
@@ -84,17 +85,17 @@ class RAIDBinocularsOriginScorer(RAIDBinocularsScorer):
         if (values.ndim != 1 or not len(values) or len(values) != row["num_scored_tokens"]
                 or not np.isfinite(values).all() or (values < 0).any()):
             raise ValueError("invalid binocular-origin token features")
-        for key in ("binocular_origin", "binocular_origin_numerator", ORIGIN_DENOMINATOR):
+        for key in ("binocular_origin", ORIGIN_NUMERATOR, ORIGIN_DENOMINATOR):
             value=row["doc_scores"][key]
             if not np.isfinite(value) or value < 0 or (key==ORIGIN_DENOMINATOR and value==0):
                 raise ValueError("invalid binocular-origin document score")
         ds = row["doc_scores"]
-        expected = float(np.float32(ds["binocular_origin_numerator"])
+        expected = float(np.float32(ds[ORIGIN_NUMERATOR])
                          / np.float32(ds[ORIGIN_DENOMINATOR]))
         if expected != ds["binocular_origin"]:
             raise ValueError(
                 "saved official Binoculars components disagree: "
-                f"tokens={len(values)}, official_numerator={ds['binocular_origin_numerator']!r}, "
+                f"tokens={len(values)}, official_numerator={ds[ORIGIN_NUMERATOR]!r}, "
                 f"denominator={ds[ORIGIN_DENOMINATOR]!r}, expected_ratio={expected!r}, "
                 f"official_ratio={ds['binocular_origin']!r}")
 
@@ -136,7 +137,7 @@ class RAIDBinocularsOriginScorer(RAIDBinocularsScorer):
                     "binoculars_performer_dtype": self.performer_dtype,
                     "token_features": {ORIGIN_NLL: nll[0].cpu().float().tolist()},
                     "doc_scores": {"binocular_origin": score,
-                        ORIGIN_DENOMINATOR: float(b[0]), "binocular_origin_numerator": float(a[0])},
+                        ORIGIN_DENOMINATOR: float(b[0]), ORIGIN_NUMERATOR: float(a[0])},
                 })
             self.validate_existing_row(output)
             outputs.append(output)

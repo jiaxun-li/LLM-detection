@@ -4,10 +4,11 @@ from __future__ import annotations
 import numpy as np
 
 REVISION = "binocular-origin-lrr-constant-v1"
-IMPLEMENTATION_VERSION = "official-score-anchored-clipping-v4"
+IMPLEMENTATION_VERSION = "official-score-anchored-clipping-v4.1"
 PAIR_METHODS = ("binoculars", "binocular_gap", "binocular_origin")
 ORIGIN_NLL = "binocular_origin_nll"
 ORIGIN_DENOMINATOR = "binocular_origin_denominator"
+ORIGIN_NUMERATOR = "binocular_origin_numerator"
 
 
 def round_bfloat16(values):
@@ -122,7 +123,7 @@ def origin_score(row, spec=None):
             return origin_score(row)
         if ORIGIN_NLL in row["token_features"]:
             numerator = anchored_nll_mean(
-                nll, row["doc_scores"]["binocular_origin_numerator"],
+                nll, row["doc_scores"][ORIGIN_NUMERATOR],
                 spec["nll_upper"])
             return float(np.float32(numerator) / np.float32(denominator))
         return float(np.minimum(nll, spec["nll_upper"]).mean() / denominator)

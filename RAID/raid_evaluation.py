@@ -12,7 +12,8 @@ from llm_detection.evaluation import ALL_METHODS, actual_fpr, auroc, calibration
 from llm_detection.io import atomic_write_json
 from llm_detection.scoring import EPS
 from llm_detection.detector_revision import (REVISION, ORIGIN_NLL, ORIGIN_DENOMINATOR,
-    origin_components, origin_score, constant_clean_scores, structurally_constant_candidate)
+    ORIGIN_NUMERATOR, origin_components, origin_score, constant_clean_scores,
+    structurally_constant_candidate)
 from llm_detection.evaluation import REVISED_METHODS
 from RAID.raid_data import measure_realized_contamination
 
@@ -108,7 +109,11 @@ def merge_score_rows(falcon_rows,binoculars_rows=None):
     if len(b)!=len(binoculars_rows):raise ValueError("duplicate Binoculars row key")
     if set(out)!=set(b): raise ValueError("Falcon/Binoculars row-key mismatch")
     for k,br in b.items():
-        out[k].setdefault("doc_scores",{}).update({x:y for x,y in br.get("doc_scores",{}).items() if x in {"binoculars","binocular_origin",ORIGIN_DENOMINATOR}})
+        out[k].setdefault("doc_scores",{}).update({
+            x:y for x,y in br.get("doc_scores",{}).items()
+            if x in {"binoculars", "binocular_origin", ORIGIN_NUMERATOR,
+                     ORIGIN_DENOMINATOR}
+        })
         names=set(FEATURES["performer_nll"]+FEATURES["cross_entropy"])|{ORIGIN_NLL}
         out[k].setdefault("token_features",{}).update({x:y for x,y in br.get("token_features",{}).items() if x in names})
     return list(out.values())
