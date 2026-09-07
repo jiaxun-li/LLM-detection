@@ -18,7 +18,9 @@ from .data import data_row_key, stable_int
 from .io import iter_jsonl
 from .scoring import EPS
 from .detector_revision import (REVISION, PAIR_METHODS, ORIGIN_NLL,
-    origin_components, origin_score, constant_clean_scores, structurally_constant_candidate)
+    origin_components, origin_score, constant_clean_scores,
+    require_valid_lrr_clipping_spec, structurally_constant_candidate,
+    valid_lrr_clipping_spec)
 
 
 SINGLE_METHODS = [
@@ -31,6 +33,10 @@ SINGLE_METHODS = [
 ]
 ALL_METHODS = SINGLE_METHODS + ["binoculars"]
 REVISED_METHODS = SINGLE_METHODS + ["binocular_gap", "binocular_origin"]
+# The revision engine retains binocular_gap so archived eight-detector results
+# remain readable and reproducible. New primary paper outputs report the six
+# single-model methods and the corrected conditional Binoculars ratio only.
+PRIMARY_REPORTED_METHODS = SINGLE_METHODS + ["binocular_origin"]
 _trapezoid = np.trapezoid if hasattr(np, "trapezoid") else np.trapz
 GENERIC_FEATURE = {
     "log_likelihood": "logp",
@@ -144,6 +150,7 @@ def oriented_score(
     if detector == "binocular_origin":
         return direction * origin_score(row, spec)
     if detector == "lrr":
+        require_valid_lrr_clipping_spec(spec)
         nll = -np.asarray(row["token_features"]["logp"], dtype=float)
         log_rank = np.asarray(row["token_features"]["log_rank"], dtype=float)
         nll = np.minimum(nll, spec["nll_upper"])
@@ -335,6 +342,11 @@ def tune_clipping_spec(
     best: dict[str, float] = {}
     best_objective = -math.inf
     for spec in _candidate_specs(detector, direction, base_rows, quantiles):
+        if detector == "lrr" and not valid_lrr_clipping_spec(spec):
+            if diagnostics is not None:
+                diagnostics.append({"detector": detector, "specification": spec,
+                    "eligible": False, "reason": "nonpositive_lrr_log_rank_cap"})
+            continue
         human = [oriented_score(row, detector, direction, spec) for row in tuning_human]
         clean = [oriented_score(row, detector, direction, spec) for row in tuning_clean_llm]
         if reject_constant and spec and (constant_clean_scores(human, clean) or

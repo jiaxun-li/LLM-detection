@@ -4,11 +4,33 @@ from __future__ import annotations
 import numpy as np
 
 REVISION = "binocular-origin-lrr-constant-v1"
-IMPLEMENTATION_VERSION = "official-score-anchored-clipping-v4.1"
+IMPLEMENTATION_VERSION = "official-score-anchored-clipping-v4.2"
 PAIR_METHODS = ("binoculars", "binocular_gap", "binocular_origin")
 ORIGIN_NLL = "binocular_origin_nll"
 ORIGIN_DENOMINATOR = "binocular_origin_denominator"
 ORIGIN_NUMERATOR = "binocular_origin_numerator"
+
+
+def valid_lrr_clipping_spec(spec):
+    """A clipped LRR denominator cap must retain positive rank evidence.
+
+    Token ranks start at one, so log-ranks are nonnegative.  A cap at zero
+    therefore maps every denominator contribution to zero and turns LRR into
+    a scaled numerator-only detector.
+    """
+    if not spec:
+        return True
+    try:
+        bound = float(spec["log_rank_upper"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    return bool(np.isfinite(bound) and bound > 0.0)
+
+
+def require_valid_lrr_clipping_spec(spec):
+    """Fail loudly if a supplied LRR clipping rule collapses its denominator."""
+    if not valid_lrr_clipping_spec(spec):
+        raise ValueError("LRR clipping requires a positive log-rank upper bound")
 
 
 def round_bfloat16(values):

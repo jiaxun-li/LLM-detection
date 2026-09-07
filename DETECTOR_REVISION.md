@@ -1,23 +1,29 @@
-# Detector amendment: retain gap, add origin, fix LRR, reject constant candidates
+# Detector amendment: report origin, fix LRR, reject degenerate candidates
 
 Revision ID: `binocular-origin-lrr-constant-v1`.
-Implementation amendment: `official-score-anchored-clipping-v4.1`. Use new result and
+Implementation amendment: `official-score-anchored-clipping-v4.2`. Use new result and
 RAID revision IDs; do not resume a gate produced by the earlier implementation.
 Version 4.1 preserves the saved official numerator when Falcon and Binoculars
 score packs are merged; version 4 omitted that field and could not evaluate an
 active origin-clipping candidate after otherwise successful gate scoring.
+Version 4.2 rejects an LRR clipping rule whose log-rank cap is nonpositive.
+Because token log-ranks are nonnegative, a zero cap collapses every denominator
+contribution and silently changes LRR into a scaled numerator-only detector.
 This is an explicit reanalysis, not a replacement of archived results. The
 legacy entry points/configurations retain their old behavior for reproducibility.
-Use the new entry points below to apply all four changes together. No archived
+Use the new entry points below to apply the changes together. No archived
 JSONL, manifest, result, or frozen specification is renamed or overwritten.
 
 ## Scientific changes
 
-- Eight methods: the six single-model methods, `binocular_gap`, and
-  `binocular_origin`. Figures display **Binocular-gap** and **Binocular-origin**.
-  The legacy input key `binoculars` remains an alias for the exponential gap,
-  never for the published ratio.
-- Gap retains `exp(mean(NLL - CE))` and its existing oriented local-gap clipping.
+- New primary nine-cell tables and figures report seven methods: the six
+  single-model methods and `binocular_origin`. The evaluation engine retains
+  `binocular_gap` only so the prior eight-detector artifacts remain readable and
+  reproducible. It is not emitted in the new reported set. The legacy input key
+  `binoculars` remains an alias for the exponential gap, never for the published
+  ratio.
+- Archived gap results retain `exp(mean(NLL - CE))` and their existing oriented
+  local-gap clipping. No archived result is deleted or relabeled as origin.
 - Origin uses `mean(NLL) / mean(CE)`, with smaller scores more machine-like.
   Origin clipping caps only numerator token NLL at one upper bound; its
   denominator stays fixed. Candidate bounds are the seven existing clean-tuning
@@ -48,7 +54,10 @@ JSONL, manifest, result, or frozen specification is renamed or overwritten.
   Primary conditional ratios keep their existing float64 aggregation on BOTH
   raw and clipped sides and are unaffected by this amendment.
 - LRR direction is fixed to `+1` (larger = machine) in revised runs. Formula,
-  competition-rank tie handling, and two-component caps are unchanged. Other
+  competition-rank tie handling, and two-component caps are unchanged. A
+  nonempty LRR clipping specification is eligible only when its log-rank upper
+  cap is finite and strictly positive. Invalid candidates are recorded as
+  `nonpositive_lrr_log_rank_cap`; attempting to evaluate one also fails. Other
   learned directions remain unchanged; origin is fixed to `-1`.
 - Reject a nonempty clipping candidate if **all pooled clean human and clean
   machine tuning document scores are exactly identical**. No tolerance, no new
@@ -68,8 +77,10 @@ JSONL, manifest, result, or frozen specification is renamed or overwritten.
 ## Programs to rerun
 
 1. Primary nine cells: `scripts/reevaluate_detector_revision.py`, once per cell,
-   using each completed source run and a new result ID. Re-evaluate all eight
-   detectors, not just SQuAD: origin and the constant safeguard affect every cell.
+   using each completed source run and a new result ID. Re-evaluate the seven
+   reported detectors, not just SQuAD: the LRR rule and candidate safeguards are
+   applied consistently to every cell. This is evaluation-only and reuses the
+   immutable prompt-conditioned target and Binoculars score packs.
 2. RAID: `RAID/revise_detectors.py --stage gate` on the completed source run.
    First scans ALL prepared texts with the pinned native tokenizer, without model
    inference, and verifies the prepared shards exactly cover the same records.
@@ -169,21 +180,24 @@ the old 15-document gate.
 ## Validation status and limitations
 
 Local no-download tests exercise ratio arithmetic, gap compatibility, fixed LRR,
-exact constant rejection, eight-detector evaluation and cached-rate parity.
+nonpositive-cap rejection, exact constant rejection, the seven-method primary
+reporting path, eight-detector compatibility evaluation, and cached-rate parity.
 Torch-dependent component tests and the live upstream gate must pass on Delta;
 local CPU tests alone do not establish GPU/model parity. The local environment
 does not contain Torch, so no new inference has been performed here.
 
-After publishing v4.1, retry the existing RAID gate with a new revision ID; do not
-submit a separate CUDA diagnostic. The wrapper uses the standard Delta module
+After publishing v4.2, retry a RAID gate with a new revision ID if producing a
+fully versioned v4.2 RAID revision; do not submit a separate CUDA diagnostic.
+The wrapper uses the standard Delta module
 setup, checks the stage and reference-file arguments, and runs
 `scripts/check_detector_revision_gate.py` before full-input tokenization or model
 loading. That runner requires two visible CUDA GPUs and runs the entire revision
 test module, including actual CUDA masked reductions (raw and capped) and
 synthetic BF16 cross-entropy outputs. Any failed or skipped test stops the gate.
 The same job then proceeds to the bounded real-model pipeline check. Previously
-completed v2 primary conditional evaluations do not require another run solely
-for this CUDA divisor correction; their float64 calculation is unchanged.
+completed primary score packs do not require GPU inference. Their evaluation
+does need a new result ID to apply the LRR candidate safeguard and seven-method
+reporting set.
 
 This is a disclosed methodological amendment after observing existing results.
 Retain the historical tables and report the revised protocol; improved outcomes

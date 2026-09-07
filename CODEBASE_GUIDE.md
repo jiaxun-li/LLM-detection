@@ -234,9 +234,12 @@ If Binoculars is enabled, target-model objects are released first and
 
 It verifies tokenizer compatibility, transfers observer logits to the performer
 device, computes exact `H(observer, performer)` in vocabulary chunks, and saves
-the token arrays needed to reconstruct
-`exp(mean performer NLL - mean cross-entropy)`. Binoculars output keys must
-match target-score keys before evaluation.
+the token arrays needed to reconstruct both the archived exponential mean-gap
+diagnostic and the revised primary conditional ratio
+`mean performer NLL / mean cross-entropy`. New primary revision outputs report
+only the ratio as `binocular_origin`; its clipping caps numerator NLL and keeps
+the denominator fixed. Binoculars output keys must match target-score keys
+before evaluation.
 
 ## Evaluate stage: ordering, scalar cache, and timing
 
@@ -504,7 +507,7 @@ python plot_tpr_contamination.py \
   --output results/paper-xsum-qwen32/tpr_contamination.png
 ```
 
-Use `--detectors log_likelihood,lrr,binoculars` to select detectors or
+Use `--detectors log_likelihood,lrr,binocular_origin` to select detectors or
 `--analysis` for a deliberately labeled non-primary analysis.
 
 [`scripts/export_completed_plots.py`](scripts/export_completed_plots.py)

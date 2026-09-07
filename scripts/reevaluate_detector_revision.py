@@ -10,7 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from RAID.revise_detectors import identifier, fingerprint, read_json, implementation_fingerprint
 from llm_detection.detector_revision import REVISION
-from llm_detection.evaluation import REVISED_METHODS, evaluate
+from llm_detection.evaluation import PRIMARY_REPORTED_METHODS, evaluate
 from llm_detection.io import atomic_write_json, iter_jsonl
 from llm_detection.revision_artifacts import PRIMARY_ARTIFACTS, finish_revision, resume_completed_revision
 
@@ -20,7 +20,7 @@ def revised_config(manifest, result_id, repetitions=None):
     dataset = manifest["dataset"]
     config.update(run_id=result_id, dataset=dataset["name"],
                   datasets={dataset["name"]:copy.deepcopy(dataset)}, target_model=manifest["target_model"])
-    config["scoring"]["detectors"] = list(REVISED_METHODS)
+    config["scoring"]["detectors"] = list(PRIMARY_REPORTED_METHODS)
     config["evaluation"]["detector_revision"] = REVISION
     if repetitions is not None:config["evaluation"]["bootstrap_repetitions"]=repetitions
     return config
@@ -46,7 +46,8 @@ def main():
         "revision_id":args.revision_id,"configuration":config,
         "source_artifacts":{name:fingerprint(path) for name,path in paths.items()},
         "binocular_origin_context":"conditional_same_saved_continuation_window",
-        "binocular_gap":"legacy_exp_mean_gap_unchanged"}
+        "reported_detector_set":"six_single_plus_binocular_origin",
+        "binocular_gap":"excluded_from_reported_set_archived_only"}
     marker=output/"revision_manifest.json"
     if marker.exists():
         previous=read_json(marker)
@@ -64,18 +65,19 @@ def main():
             raise ValueError(f"primary pack is not prompt-conditioned: {policy}")
     rows=evaluate(paths["target_scores.jsonl"],output/"metrics.csv",config,
                   paths["binoculars_scores.jsonl"])
-    if {r["detector"] for r in rows}!=set(REVISED_METHODS):raise ValueError("missing revised detectors")
+    if {r["detector"] for r in rows}!=set(PRIMARY_REPORTED_METHODS):
+        raise ValueError("missing primary reported detectors")
     if any(r["direction"]!=1 for r in rows if r["detector"]=="lrr"):
         raise ValueError("LRR direction contract failed")
     from plot_tpr_contamination import read_metrics, plot
-    plot(read_metrics(output/"metrics.csv","primary_frozen_mixture"),REVISED_METHODS,
+    plot(read_metrics(output/"metrics.csv","primary_frozen_mixture"),PRIMARY_REPORTED_METHODS,
          output/"tpr_contamination.png",True)
     if identity["source_artifacts"]!={name:fingerprint(path) for name,path in paths.items()}:
         raise ValueError("source artifacts changed during evaluation")
-    report={"validation_status":"pass","detectors":REVISED_METHODS,"metric_rows":len(rows),
+    report={"validation_status":"pass","detectors":PRIMARY_REPORTED_METHODS,"metric_rows":len(rows),
         "bootstrap_repetitions":config["evaluation"]["bootstrap_repetitions"]}
     finish_revision(output,identity,report,PRIMARY_ARTIFACTS)
-    print("primary eight-detector revision: PASS",flush=True)
+    print("primary seven-detector revision: PASS",flush=True)
 
 
 if __name__=="__main__":main()

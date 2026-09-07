@@ -13,7 +13,8 @@ from llm_detection.io import atomic_write_json
 from llm_detection.scoring import EPS
 from llm_detection.detector_revision import (REVISION, ORIGIN_NLL, ORIGIN_DENOMINATOR,
     ORIGIN_NUMERATOR, origin_components, origin_score, constant_clean_scores,
-    structurally_constant_candidate)
+    require_valid_lrr_clipping_spec, structurally_constant_candidate,
+    valid_lrr_clipping_spec)
 from llm_detection.evaluation import REVISED_METHODS
 from RAID.raid_data import measure_realized_contamination
 
@@ -89,6 +90,7 @@ def oriented_document_score(r,d,direction,spec=None):
     if not spec: return direction*raw_document_score(r,d)
     if d=="binocular_origin": return direction*origin_score(r,spec)
     if d=="lrr":
+        require_valid_lrr_clipping_spec(spec)
         n=np.minimum(-feat(r,"logp"),spec["nll_upper"])
         q=np.minimum(feat(r,"log_rank"),spec["log_rank_upper"])
         return direction*float(n.mean()/(q.mean()+EPS))
@@ -172,6 +174,11 @@ def select_universal_specification(
         raise ValueError("full-universal clipping requires 11 nonempty attacks")
     best={}; best_j=-math.inf; diagnostics=[]
     for i,spec in enumerate(candidate_specifications(d,direction,list(h)+list(clean),quantiles)):
+        if d=="lrr" and not valid_lrr_clipping_spec(spec):
+            diagnostics.append({"candidate_index":i,"specification":spec,
+                "objective":None,"eligible":False,
+                "reason":"nonpositive_lrr_log_rank_cap"})
+            continue
         hs=[oriented_document_score(r,d,direction,spec) for r in h]
         clean_scores=[oriented_document_score(r,d,direction,spec) for r in clean]
         if reject_constant and spec and (constant_clean_scores(hs,clean_scores) or
@@ -214,6 +221,11 @@ def select_rate_adaptive_specification(
       for name,values in attack_rows.items()}
     best={};best_gain=-math.inf;diagnostics=[]
     for i,spec in enumerate(candidates):
+        if d=="lrr" and not valid_lrr_clipping_spec(spec):
+            diagnostics.append({"candidate_index":i,"specification":spec,
+                "constraint_feasible":False,
+                "reason":"nonpositive_lrr_log_rank_cap"})
+            continue
         hs=[oriented_document_score(r,d,direction,spec) for r in h]
         clean_scores=[oriented_document_score(r,d,direction,spec) for r in clean]
         if reject_constant and spec and (constant_clean_scores(hs,clean_scores) or

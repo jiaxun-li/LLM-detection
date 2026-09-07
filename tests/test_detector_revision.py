@@ -10,9 +10,11 @@ from unittest.mock import Mock, patch
 import numpy as np
 from llm_detection.detector_revision import (REVISION, ORIGIN_NLL, ORIGIN_DENOMINATOR,
     ORIGIN_NUMERATOR, anchored_nll_mean, constant_clean_scores, origin_score,
-    official_nll_mean, round_bfloat16, structurally_constant_candidate)
-from llm_detection.evaluation import (REVISED_METHODS, _candidate_specs,
-    detector_raw_score, orientation, oriented_score, tune_clipping_spec, evaluate)
+    official_nll_mean, require_valid_lrr_clipping_spec, round_bfloat16,
+    structurally_constant_candidate, valid_lrr_clipping_spec)
+from llm_detection.evaluation import (PRIMARY_REPORTED_METHODS, REVISED_METHODS,
+    _candidate_specs, detector_raw_score, orientation, oriented_score,
+    tune_clipping_spec, evaluate)
 from RAID.raid_evaluation import (learn_direction, merge_score_rows,
     select_universal_specification, select_rate_adaptive_specification, evaluate_raid)
 
@@ -163,6 +165,49 @@ class RevisionTests(unittest.TestCase):
             {"nll_upper":3.1,"log_rank_upper":4.2}))
         self.assertFalse(structurally_constant_candidate(rows,"binocular_origin",-1,{"nll_upper":1.}))
 
+    def test_zero_lrr_denominator_cap_is_rejected_everywhere(self):
+        invalid={"nll_upper":8.15,"log_rank_upper":0.0}
+        self.assertFalse(valid_lrr_clipping_spec(invalid))
+        self.assertTrue(valid_lrr_clipping_spec({}))
+        self.assertTrue(valid_lrr_clipping_spec(
+            {"nll_upper":8.15,"log_rank_upper":math.log(2)}))
+        with self.assertRaisesRegex(ValueError,"positive log-rank"):
+            require_valid_lrr_clipping_spec(invalid)
+
+        human={"token_features":{"logp":[-3.,-4.],"log_rank":[0.,math.log(2)]},
+               "doc_scores":{"lrr":10.}}
+        machine={"label":"machine","attack":"synonym",
+                 "token_features":{"logp":[-2.,-3.],"log_rank":[0.,math.log(3)]},
+                 "doc_scores":{"lrr":5.}}
+        with self.assertRaisesRegex(ValueError,"positive log-rank"):
+            oriented_score(human,"lrr",1,invalid)
+        with self.assertRaisesRegex(ValueError,"positive log-rank"):
+            from RAID.raid_evaluation import oriented_document_score
+            oriented_document_score(human,"lrr",1,invalid)
+
+        primary_diagnostics=[]
+        with patch("llm_detection.evaluation._candidate_specs",
+                   return_value=[{},invalid]):
+            primary=tune_clipping_spec("lrr",1,[human],[machine],[machine],
+                                       [.8],True,primary_diagnostics)
+        self.assertEqual(primary,{})
+        self.assertEqual(primary_diagnostics[0]["reason"],
+                         "nonpositive_lrr_log_rank_cap")
+
+        with patch("RAID.raid_evaluation.candidate_specifications",
+                   return_value=[{},invalid]):
+            universal,universal_diagnostics=select_universal_specification(
+                "lrr",1,[human],[machine],{"synonym":[machine]},
+                require_all_attacks=False,reject_constant=True)
+            rate,rate_diagnostics,_=select_rate_adaptive_specification(
+                "lrr",1,[human],[machine],[machine],{},1,
+                reject_constant=True)
+        self.assertEqual((universal,rate),({},{}))
+        self.assertEqual(universal_diagnostics[1]["reason"],
+                         "nonpositive_lrr_log_rank_cap")
+        self.assertEqual(rate_diagnostics[1]["reason"],
+                         "nonpositive_lrr_log_rank_cap")
+
     def test_primary_rejects_constant_nonempty_candidate_only(self):
         h={"token_features":{"rank":[2.,3.]},"doc_scores":{"rank":2.5}}
         m={"token_features":{"rank":[1.,2.]},"doc_scores":{"rank":1.5}}
@@ -229,7 +274,7 @@ class RevisionTests(unittest.TestCase):
         del rows[0]["token_features"][ORIGIN_NLL]
         with self.assertRaises(ValueError):evaluate_raid(rows,config)
 
-    def test_primary_eight_detectors_end_to_end(self):
+    def test_evaluator_retains_eight_detector_compatibility(self):
         from llm_detection.config import load_config,resolved_run_config
         from llm_detection.io import append_jsonl
         from tests.test_evaluation import protocol_rows,binoculars_row
@@ -271,6 +316,15 @@ class RevisionTests(unittest.TestCase):
             with patch("sys.argv",argv),patch("plot_tpr_contamination.plot",side_effect=fake_plot):
                 main()
             result=root/"results/new/metrics.csv";old_result=result.read_bytes()
+            import csv
+            import json
+            report=json.loads((root/"results/new/validation_report.json").read_text())
+            self.assertEqual(report["detectors"],PRIMARY_REPORTED_METHODS)
+            with result.open(newline="") as handle:
+                self.assertEqual(
+                    {row["detector"] for row in csv.DictReader(handle)},
+                    set(PRIMARY_REPORTED_METHODS),
+                )
             with patch("sys.argv",argv),patch("scripts.reevaluate_detector_revision.evaluate") as calculate:
                 main();calculate.assert_not_called()
             self.assertEqual(before,{p.name:p.read_bytes() for p in source.iterdir()})

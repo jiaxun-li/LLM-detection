@@ -1,8 +1,10 @@
 # Scientific workflow
 
 Detector amendment: see [DETECTOR_REVISION.md](DETECTOR_REVISION.md) for the
-versioned eight-detector reanalysis (gap retained, origin added, fixed LRR, and
-constant-candidate safeguard). The historical protocol below remains archived.
+versioned seven-method primary reanalysis (published-ratio Binoculars replaces
+the reported gap diagnostic, LRR direction is fixed, and degenerate clipping
+candidates are rejected). The eight-detector compatibility path and historical
+protocol below remain archived.
 
 This is the canonical scientific protocol for the repository. The frozen
 full-scale specification is [`configs/paper.json`](configs/paper.json); the
@@ -180,7 +182,7 @@ evidence differs:
 | DetectLLM LRR | Mean token NLL divided by mean log rank, with a small numerical epsilon. |
 | Entropy | Mean exact full-vocabulary predictive entropy. |
 | Entropy gap | Mean token NLL minus predictive entropy. |
-| Binoculars | `exp(mean performer NLL - mean H(observer, performer))`. |
+| Binoculars-origin | `mean performer NLL / mean H(observer, performer)`; this is the prompt-conditioned ratio adaptation used by the revised primary analysis. |
 
 Binoculars has explicit, non-interchangeable roles:
 
@@ -192,6 +194,12 @@ Binoculars has explicit, non-interchangeable roles:
 The configured devices are `cuda:0` for the performer and `cuda:1` for the
 observer. Local tests validate the roles and formula, but not the real
 two-GPU execution.
+
+The revised primary cells preserve their original prompt-conditioned response
+window. Binoculars-origin clips only numerator token NLL and leaves the
+cross-entropy denominator unchanged. The former exponential mean-gap detector
+is retained in the evaluator only for archived-result compatibility and is not
+part of new primary tables or figures.
 
 ## Leakage-safe analysis
 
