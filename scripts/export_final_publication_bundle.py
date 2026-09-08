@@ -298,7 +298,7 @@ def verify_raid_results(root: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     ensure(report.get("validation_status") == "pass", "RAID validation did not pass")
     ensure(marker == report, "RAID completion marker disagrees with validation report")
     ensure(report.get("bootstrap_repetitions") == EXPECTED_BOOTSTRAPS, "RAID bootstrap count is not 2000")
-    ensure(report.get("metric_rows") == EXPECTED_RAID_ROWS, "RAID metric row count is not 416")
+    ensure(report.get("metrics_rows") == EXPECTED_RAID_ROWS, "RAID metrics row count is not 416")
     ensure(tuple(report.get("detectors", [])) == RAID_SOURCE_DETECTORS, "RAID eight-detector source contract changed")
     expected = report.get("artifacts", {})
     ensure(set(expected) == set(RAID_ARTIFACTS), "RAID artifact inventory changed")

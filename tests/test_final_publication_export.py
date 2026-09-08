@@ -111,7 +111,7 @@ class FinalPublicationExportTests(unittest.TestCase):
             report = {
                 "validation_status": "pass",
                 "bootstrap_repetitions": 2000,
-                "metric_rows": 416,
+                "metrics_rows": 416,
                 "detectors": list(RAID_SOURCE_DETECTORS),
                 "artifacts": artifacts,
             }
