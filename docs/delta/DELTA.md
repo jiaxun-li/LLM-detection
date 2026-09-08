@@ -6,7 +6,22 @@ are for an authorized Delta login session after the local test suite passes.
 Run the bounded, one-GPU validation in [`docs/delta/DELTA_SMOKE.md`](DELTA_SMOKE.md)
 before using the paper-scale scripts below.
 
-## One-time environment
+## Activate the existing working environment
+
+For Jiaxun's current Delta installation, do not rebuild or rename its directory:
+
+```bash
+cd ~/LLM-detection
+source tools/delta/activate_environment.sh
+```
+
+This initializes the Delta modules and activates the existing
+`/projects/bhuc/$USER/venvs/delta-smoke` installation. The interactive prompt
+shows `(llm-detection)`. Use this command in each new session; `deactivate` still
+works normally. No startup files, packages, caches, or batch launchers are changed.
+The stable Git branch is `main`.
+
+## One-time environment for a new installation only
 
 ```bash
 VENV_PATH="/projects/<project>/$USER/venvs/llm-detection" \

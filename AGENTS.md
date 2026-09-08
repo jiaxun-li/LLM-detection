@@ -19,7 +19,7 @@ operations reference is `docs/CODEBASE_GUIDE.md`.
 - Delta login-node checkout: `/u/jli101/LLM-detection` (normally
   `~/LLM-detection`).
 - GitHub repository: `https://github.com/jiaxun-li/LLM-detection.git`.
-- Active development branch: `codex/scoring-feature-pack`.
+- Stable branch: `main`; use short-lived `codex/` branches for new changes.
 - Delta Slurm charge account: `bhuc-delta-gpu`.
 - Normal GPU partition: `gpuA100x4`; use `gpuH200x8` only for a deliberately
   reviewed large-model launch such as Qwen 72B.
@@ -33,6 +33,9 @@ to review and publish.
 
 - Working CUDA 12.8 virtual environment:
   `/projects/bhuc/jli101/venvs/delta-smoke`.
+- Friendly interactive activation: `source tools/delta/activate_environment.sh`.
+  Displays `llm-detection` without moving the installed environment. Existing
+  batch launchers deliberately retain the working `delta-smoke` path.
 - Shared Hugging Face cache:
   `/work/hdd/bhuc/jli101/llm-detection-smoke/huggingface`.
 - Torch cache:

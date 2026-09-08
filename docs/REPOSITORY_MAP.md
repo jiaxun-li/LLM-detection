@@ -51,6 +51,7 @@ historical configurations for reproducibility.
 | File in `tools/` | Use |
 |---|---|
 | `delta/setup_delta_env.sh` | Delta Python/CUDA environment setup |
+| `delta/activate_environment.sh` | Activate the existing Delta environment with the friendly `llm-detection` prompt |
 | `delta/delta_repository_smoke.sbatch` | No-download layout and environment regression check on Delta |
 | `delta/delta_experiment.sbatch` | Launch a primary model/dataset experiment |
 | `delta/submit_delta_matrix.sh` | Submit a reviewed multi-cell matrix |
