@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from llm_detection.detector_revision import (ORIGIN_NLL, ORIGIN_DENOMINATOR,
+from experiment_core.detectors.detector_revision import (ORIGIN_NLL, ORIGIN_DENOMINATOR,
     ORIGIN_NUMERATOR)
 from RAID.raid_scoring import RAIDBinocularsScorer, _torch
 

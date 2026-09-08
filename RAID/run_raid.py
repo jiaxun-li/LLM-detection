@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from llm_detection.io import atomic_write_json
+from experiment_core.infrastructure.io import atomic_write_json
 
 from RAID.raid_pipeline import (
     STAGES,
@@ -33,7 +33,7 @@ def parse_args(default_stage: str | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--workspace", default=".")
-    parser.add_argument("--config", default="RAID/config.json")
+    parser.add_argument("--config", default="configs/raid.json")
     parser.add_argument(
         "--stage",
         choices=[*STAGES, "all"],

@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from llm_detection.io import atomic_write_json
+from experiment_core.infrastructure.io import atomic_write_json
 from RAID.raid_pipeline import (
     evaluate_stage,
     load_raid_config,
@@ -294,7 +294,7 @@ def main() -> None:
     parser.add_argument("--source-run-id", required=True)
     parser.add_argument("--promotion-id", required=True)
     parser.add_argument("--workspace", default=".")
-    parser.add_argument("--config", default="RAID/config.json")
+    parser.add_argument("--config", default="configs/raid.json")
     parser.add_argument("--bootstrap-repetitions", type=int, default=2000)
     parser.add_argument("--debug-only", action="store_true")
     args = parser.parse_args()

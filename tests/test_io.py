@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from llm_detection.io import (
+from experiment_core.infrastructure.io import (
     AppendSafeJsonlWriter,
     append_jsonl,
     completed_keys,

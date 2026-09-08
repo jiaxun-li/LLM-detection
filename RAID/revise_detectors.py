@@ -14,10 +14,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from llm_detection.io import atomic_write_json, iter_jsonl
-from llm_detection.detector_revision import REVISION, IMPLEMENTATION_VERSION
-from llm_detection.evaluation import REVISED_METHODS
-from llm_detection.revision_artifacts import RAID_ARTIFACTS, finish_revision, resume_completed_revision
+from experiment_core.infrastructure.io import atomic_write_json, iter_jsonl
+from experiment_core.detectors.detector_revision import REVISION, IMPLEMENTATION_VERSION
+from experiment_core.analysis.evaluation import REVISED_METHODS
+from experiment_core.infrastructure.revision_artifacts import RAID_ARTIFACTS, finish_revision, resume_completed_revision
 
 
 def identifier(value):
@@ -33,9 +33,9 @@ def fingerprint(path):
 
 def implementation_fingerprint():
     names=("RAID/binocular_origin.py","RAID/revise_detectors.py","RAID/raid_evaluation.py",
-           "llm_detection/detector_revision.py","llm_detection/evaluation.py",
-           "llm_detection/scoring.py","RAID/raid_scoring.py",
-           "scripts/reevaluate_detector_revision.py", "llm_detection/revision_artifacts.py",
+           "experiment_core/detectors/detector_revision.py","experiment_core/analysis/evaluation.py",
+           "experiment_core/detectors/scoring.py","RAID/raid_scoring.py",
+           "tools/reanalysis/reevaluate_detector_revision.py", "experiment_core/infrastructure/revision_artifacts.py",
            "RAID/revision_gate.py")
     return {name:hashlib.sha256((ROOT/name).read_bytes()).hexdigest() for name in names}
 
@@ -62,7 +62,7 @@ def scorer_config(source):
 
 def compact_rows(path):
     import numpy as np
-    from llm_detection.evaluation import EVALUATION_TOKEN_FEATURES
+    from experiment_core.analysis.evaluation import EVALUATION_TOKEN_FEATURES
     for row in iter_jsonl(path, tolerate_partial_last_line=False):
         yield {**{k:v for k,v in row.items() if k not in {"text","prompt","token_features","document_features"}},
             "token_features": {k:np.asarray(v,dtype=float) for k,v in row["token_features"].items()
@@ -71,7 +71,7 @@ def compact_rows(path):
 
 def adopt_score_pack(adopted, output):
     """Atomically copy a stopped score pack with pre/post content validation."""
-    from llm_detection.revision_artifacts import artifact_digest
+    from experiment_core.infrastructure.revision_artifacts import artifact_digest
     adopted, output = Path(adopted), Path(output)
     if output.exists():
         raise ValueError("refusing to adopt over an existing destination score pack")

@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from llm_detection.scoring import (
+from experiment_core.detectors.scoring import (
     _encode_row,
     binoculars_score,
     exact_token_features,
@@ -18,7 +18,7 @@ from llm_detection.scoring import (
     single_model_doc_scores,
     TargetModelScorer,
 )
-from llm_detection.generation import length_bucketed
+from experiment_core.preparation.generation import length_bucketed
 
 
 class ExactScoringTests(unittest.TestCase):

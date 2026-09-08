@@ -10,8 +10,8 @@ from unittest.mock import patch
 
 import numpy as np
 
-from llm_detection.config import load_config, resolved_run_config
-from llm_detection.evaluation import (
+from experiment_core.infrastructure.config import load_config, resolved_run_config
+from experiment_core.analysis.evaluation import (
     _bootstrap_index_values,
     _metric_bootstrap,
     _robustness_bootstrap,
@@ -30,7 +30,7 @@ from llm_detection.evaluation import (
     tpr,
     tune_clipping_spec,
 )
-from llm_detection.io import append_jsonl
+from experiment_core.infrastructure.io import append_jsonl
 
 
 def feature_row(
@@ -227,7 +227,7 @@ class EvaluationProtocolTests(unittest.TestCase):
                 ]
             )
             with patch(
-                "llm_detection.evaluation.oriented_score",
+                "experiment_core.analysis.evaluation.oriented_score",
                 wraps=oriented_score,
             ) as score_spy:
                 precomputed = precompute_evaluation_scores(
@@ -377,15 +377,15 @@ class EvaluationProtocolTests(unittest.TestCase):
                 append_jsonl(target_path, row)
             with (
                 patch(
-                    "llm_detection.evaluation.orientation",
+                    "experiment_core.analysis.evaluation.orientation",
                     side_effect=orientation_spy,
                 ),
                 patch(
-                    "llm_detection.evaluation.tune_clipping_spec",
+                    "experiment_core.analysis.evaluation.tune_clipping_spec",
                     side_effect=tuning_spy,
                 ),
                 patch(
-                    "llm_detection.evaluation.precompute_evaluation_scores",
+                    "experiment_core.analysis.evaluation.precompute_evaluation_scores",
                     side_effect=precompute_spy,
                 ),
             ):
@@ -566,7 +566,7 @@ class EvaluationProtocolTests(unittest.TestCase):
             }
 
         with patch(
-            "llm_detection.evaluation.oriented_score",
+            "experiment_core.analysis.evaluation.oriented_score",
             side_effect=AssertionError(
                 "bootstrap must use precomputed scalar arrays"
             ),
@@ -653,7 +653,7 @@ class EvaluationProtocolTests(unittest.TestCase):
             ("clipped", clipped_threshold),
         ):
             with patch(
-                "llm_detection.evaluation.oriented_score",
+                "experiment_core.analysis.evaluation.oriented_score",
                 side_effect=AssertionError(
                     "robustness bootstrap must use precomputed scalar arrays"
                 ),

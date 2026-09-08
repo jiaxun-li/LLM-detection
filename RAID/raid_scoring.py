@@ -17,10 +17,10 @@ from typing import Any, Iterable, Sequence
 import numpy as np
 
 from RAID.raid_data import raid_row_key as prepared_raid_row_key
-from llm_detection.generation import length_bucketed
-from llm_detection.io import AppendSafeJsonlWriter, completed_keys, iter_jsonl
-from llm_detection.runtime import Throughput, peak_gpu_memory_bytes
-from llm_detection.scoring import (
+from experiment_core.preparation.generation import length_bucketed
+from experiment_core.infrastructure.io import AppendSafeJsonlWriter, completed_keys, iter_jsonl
+from experiment_core.infrastructure.runtime import Throughput, peak_gpu_memory_bytes
+from experiment_core.detectors.scoring import (
     _compatible_tokenizers,
     _load_model,
     _padded_batch,

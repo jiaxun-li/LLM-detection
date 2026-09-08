@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from llm_detection.io import iter_jsonl
+from experiment_core.infrastructure.io import iter_jsonl
 from RAID.raid_data import (
     DEFAULT_SPLIT_FRACTIONS,
     RAID_ADVERSARIAL_ATTACKS,

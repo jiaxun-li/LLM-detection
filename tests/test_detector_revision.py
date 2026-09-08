@@ -8,11 +8,11 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import numpy as np
-from llm_detection.detector_revision import (REVISION, ORIGIN_NLL, ORIGIN_DENOMINATOR,
+from experiment_core.detectors.detector_revision import (REVISION, ORIGIN_NLL, ORIGIN_DENOMINATOR,
     ORIGIN_NUMERATOR, anchored_nll_mean, constant_clean_scores, origin_score,
     official_nll_mean, require_valid_lrr_clipping_spec, round_bfloat16,
     structurally_constant_candidate, valid_lrr_clipping_spec)
-from llm_detection.evaluation import (PRIMARY_REPORTED_METHODS, REVISED_METHODS,
+from experiment_core.analysis.evaluation import (PRIMARY_REPORTED_METHODS, REVISED_METHODS,
     _candidate_specs, detector_raw_score, orientation, oriented_score,
     tune_clipping_spec, evaluate)
 from RAID.raid_evaluation import (learn_direction, merge_score_rows,
@@ -28,7 +28,7 @@ def pair(nll=(1.,3.), ce=(2.,2.)):
 class RevisionTests(unittest.TestCase):
     def test_revision_dtype_reaches_real_loader_without_torch_or_downloads(self):
         from RAID.revise_detectors import scorer_config
-        from llm_detection.scoring import _load_model
+        from experiment_core.detectors.scoring import _load_model
 
         source_row={
             "binoculars_observer_revision":"a"*40,
@@ -44,8 +44,8 @@ class RevisionTests(unittest.TestCase):
         model.parameters.return_value=iter([SimpleNamespace(device="cpu")])
         auto_model=Mock();auto_model.from_pretrained.return_value=model
         auto_tokenizer=Mock();auto_tokenizer.from_pretrained.return_value=tokenizer
-        with patch("llm_detection.scoring._torch",return_value=fake_torch), \
-             patch("llm_detection.scoring._transformers",return_value=(auto_model,auto_tokenizer)):
+        with patch("experiment_core.detectors.scoring._torch",return_value=fake_torch), \
+             patch("experiment_core.detectors.scoring._transformers",return_value=(auto_model,auto_tokenizer)):
             _load_model("tiiuae/falcon-7b",config["observer_revision"],
                 config["tokenizer_revision"],config["dtype"],"cpu",None,
                 trust_remote_code=config["trust_remote_code"])
@@ -149,7 +149,7 @@ class RevisionTests(unittest.TestCase):
         self.assertTrue(structurally_constant_candidate(rows,"rank",-1,spec))
         self.assertFalse(structurally_constant_candidate(rows,"rank",-1,{}))
         diagnostics=[]
-        with patch("llm_detection.evaluation._candidate_specs",return_value=[{},spec]):
+        with patch("experiment_core.analysis.evaluation._candidate_specs",return_value=[{},spec]):
             tune_clipping_spec("rank",-1,rows[:1],rows[1:],rows[1:],[.8],True,diagnostics)
         self.assertEqual(diagnostics[0]["reason"],"constant_clean_tuning_scores")
         with patch("RAID.raid_evaluation.candidate_specifications",return_value=[{},spec]):
@@ -186,7 +186,7 @@ class RevisionTests(unittest.TestCase):
             oriented_document_score(human,"lrr",1,invalid)
 
         primary_diagnostics=[]
-        with patch("llm_detection.evaluation._candidate_specs",
+        with patch("experiment_core.analysis.evaluation._candidate_specs",
                    return_value=[{},invalid]):
             primary=tune_clipping_spec("lrr",1,[human],[machine],[machine],
                                        [.8],True,primary_diagnostics)
@@ -212,7 +212,7 @@ class RevisionTests(unittest.TestCase):
         h={"token_features":{"rank":[2.,3.]},"doc_scores":{"rank":2.5}}
         m={"token_features":{"rank":[1.,2.]},"doc_scores":{"rank":1.5}}
         diagnostics=[]
-        with patch("llm_detection.evaluation._candidate_specs",return_value=[{}, {"lower":0.}]):
+        with patch("experiment_core.analysis.evaluation._candidate_specs",return_value=[{}, {"lower":0.}]):
             selected=tune_clipping_spec("rank",-1,[h],[m],[m],[.8],True,diagnostics)
         self.assertEqual(selected,{})
         self.assertEqual(diagnostics[0]["reason"],"constant_clean_tuning_scores")
@@ -275,8 +275,8 @@ class RevisionTests(unittest.TestCase):
         with self.assertRaises(ValueError):evaluate_raid(rows,config)
 
     def test_evaluator_retains_eight_detector_compatibility(self):
-        from llm_detection.config import load_config,resolved_run_config
-        from llm_detection.io import append_jsonl
+        from experiment_core.infrastructure.config import load_config,resolved_run_config
+        from experiment_core.infrastructure.io import append_jsonl
         from tests.test_evaluation import protocol_rows,binoculars_row
         config=resolved_run_config(load_config("configs/smoke.json"),"xsum","test-model","revision-test")
         config["contamination"]["ratios"]=[0.,.1,.5]
@@ -294,10 +294,10 @@ class RevisionTests(unittest.TestCase):
             self.assertTrue((root/"clipping_rejections.json").exists())
 
     def test_primary_runner_preserves_sources_and_reuses_completed_result(self):
-        from llm_detection.config import load_config,resolved_run_config
-        from llm_detection.io import append_jsonl,atomic_write_json
+        from experiment_core.infrastructure.config import load_config,resolved_run_config
+        from experiment_core.infrastructure.io import append_jsonl,atomic_write_json
         from tests.test_evaluation import protocol_rows,binoculars_row
-        from scripts.reevaluate_detector_revision import main
+        from tools.reanalysis.reevaluate_detector_revision import main
         config=resolved_run_config(load_config("configs/smoke.json"),"xsum","test-model","source")
         config["contamination"]["ratios"]=[0.,.1,.5]
         config["evaluation"].update(bootstrap_repetitions=2,
@@ -325,13 +325,13 @@ class RevisionTests(unittest.TestCase):
                     {row["detector"] for row in csv.DictReader(handle)},
                     set(PRIMARY_REPORTED_METHODS),
                 )
-            with patch("sys.argv",argv),patch("scripts.reevaluate_detector_revision.evaluate") as calculate:
+            with patch("sys.argv",argv),patch("tools.reanalysis.reevaluate_detector_revision.evaluate") as calculate:
                 main();calculate.assert_not_called()
             self.assertEqual(before,{p.name:p.read_bytes() for p in source.iterdir()})
             self.assertEqual(old_result,result.read_bytes())
             # Recover a lost final marker without repeating scientific analysis.
             (root/"results/new/revision.complete.json").unlink()
-            with patch("sys.argv",argv),patch("scripts.reevaluate_detector_revision.evaluate") as calculate:
+            with patch("sys.argv",argv),patch("tools.reanalysis.reevaluate_detector_revision.evaluate") as calculate:
                 main();calculate.assert_not_called()
             result.unlink()
             with patch("sys.argv",argv),self.assertRaisesRegex(ValueError,"artifact validation"):
@@ -339,8 +339,8 @@ class RevisionTests(unittest.TestCase):
 
     def test_completion_recovery_and_artifact_integrity(self):
         import json
-        from llm_detection.revision_artifacts import finish_revision,resume_completed_revision
-        from llm_detection.io import atomic_write_json
+        from experiment_core.infrastructure.revision_artifacts import finish_revision,resume_completed_revision
+        from experiment_core.infrastructure.io import atomic_write_json
         for state in ("running","complete"):
             with self.subTest(state=state),tempfile.TemporaryDirectory() as tmp:
                 root=Path(tmp);(root/"metrics.csv").write_text("a,b\n1,2\n")
@@ -361,7 +361,7 @@ class RevisionTests(unittest.TestCase):
     def test_full_tokenizer_preflight_and_real_pipeline_probe(self):
         import json
         from RAID.revision_gate import preflight_inputs,run_pipeline_probe
-        from llm_detection.io import append_jsonl
+        from experiment_core.infrastructure.io import append_jsonl
         from tests.test_raid_evaluation import protocol_rows
         class Tokenizer:
             pad_token_id=0
@@ -415,9 +415,9 @@ class RevisionTests(unittest.TestCase):
     def test_raid_revision_runner_gate_score_evaluate_and_recover(self):
         import json
         from RAID.revise_detectors import main
-        from llm_detection.io import append_jsonl,atomic_write_json
+        from experiment_core.infrastructure.io import append_jsonl,atomic_write_json
         from tests.test_raid_evaluation import protocol_rows
-        from llm_detection.revision_artifacts import RAID_ARTIFACTS
+        from experiment_core.infrastructure.revision_artifacts import RAID_ARTIFACTS
         from RAID.raid_evaluation import write_evaluation_artifacts
         class Tokenizer:
             pad_token_id=0

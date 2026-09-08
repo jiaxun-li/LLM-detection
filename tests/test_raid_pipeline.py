@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from llm_detection.io import atomic_write_json, iter_jsonl
+from experiment_core.infrastructure.io import atomic_write_json, iter_jsonl
 from RAID.raid_data import RAID_ADVERSARIAL_ATTACKS
 from RAID.raid_pipeline import (
     adopt_prepared_stage,
@@ -154,7 +154,7 @@ class RaidPipelineTests(unittest.TestCase):
 
     def test_adopts_completed_preparation_with_exact_shard_validation(self):
         root = Path(__file__).resolve().parents[1]
-        config = load_raid_config(root / "RAID" / "config.json")
+        config = load_raid_config(root / "configs" / "raid.json")
         prepared, _, _ = _packs()
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary)
@@ -258,7 +258,7 @@ class RaidPipelineTests(unittest.TestCase):
 
     def test_cpu_evaluate_plot_validate_contract(self):
         root = Path(__file__).resolve().parents[1]
-        config = load_raid_config(root / "RAID" / "config.json")
+        config = load_raid_config(root / "configs" / "raid.json")
         prepared, falcon, binoculars = _packs()
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary)
@@ -347,7 +347,7 @@ class RaidPipelineTests(unittest.TestCase):
             ):
                 promoted = promote_bootstrap_evaluation(
                     workspace,
-                    root / "RAID" / "config.json",
+                    root / "configs" / "raid.json",
                     source_run_id="test-run",
                     promotion_id="test-run-bootstrap-promotion",
                     bootstrap_repetitions=0,

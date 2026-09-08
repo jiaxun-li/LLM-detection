@@ -15,9 +15,9 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Iterable
 
-from llm_detection.data import stable_int
-from llm_detection.io import atomic_write_json, iter_jsonl
-from llm_detection.runtime import accelerator_info, software_versions
+from experiment_core.preparation.data import stable_int
+from experiment_core.infrastructure.io import atomic_write_json, iter_jsonl
+from experiment_core.infrastructure.runtime import accelerator_info, software_versions
 
 from RAID.raid_data import (
     RAID_ADVERSARIAL_ATTACKS,

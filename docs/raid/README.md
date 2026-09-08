@@ -1,0 +1,58 @@
+# RAID benchmark implementation
+
+The frozen scientific protocol is [`SCIENTIFIC_DESIGN.md`](SCIENTIFIC_DESIGN.md).
+Delta setup, smoke-gate, submission, resume, and validation commands are in
+[`DELTA_GUIDE.md`](DELTA_GUIDE.md).
+
+The scientific entry point is `run_raid.py`. Delta launches must use the
+dependency-safe wrapper so CPU preparation, independent GPU shards, and final
+evaluation receive appropriate resources:
+
+```bash
+bash RAID/submit_raid.sh
+```
+
+A completed bounded preparation can be adopted under a corrected run ID by
+setting `ADOPT_PREPARED_RUN_DIR`; adoption verifies exact prepared and shard
+keys before scoring begins.
+
+`run_raid_shard.py` is called only by the Slurm array wrappers. Do not launch
+multiple copies of `run_raid.py --stage score` against one run directory.
+
+Bounded checks must use `--limit-sources` and remain `debug_only`. Full results
+must pass `RAID/validate_raid.py`; a Slurm `COMPLETED` state alone is not enough.
+
+`promote_bootstrap.py` is the only supported path for turning the audited
+unbounded 500-bootstrap diagnostic into the frozen 2,000-bootstrap result. It
+creates a new result ID, reuses the completed run's immutable prepared and
+score packs, reruns only evaluation/plotting/validation, and records source
+artifact provenance in `promotion_manifest.json`. The Delta wrapper is
+`delta_raid_bootstrap_promotion.sbatch`; it performs no model inference.
+
+The frozen evaluator reports raw, full-universal clipped, and
+eligible-universal clipped results for all seven detectors. It retains the four
+fixed contamination-rate bounds as a secondary oracle analysis. Every
+unbounded preparation must receive the pilot's 500-source
+`development_source_ids.json` through `EXCLUDE_SOURCE_IDS_PATH`; the manifest
+hashes that file and validation enforces exact exclusion and zero overlap.
+
+`archive/raid_pilots/compare_tuning_methods.py` (from the repository root) is an
+archived, CPU-only pilot analysis. It reuses a
+bounded run's completed Falcon and Binoculars score packs, never changes the
+frozen evaluator, and writes only below
+`results/raid/<run-id>/tuning_comparison_v1/`. Its 11 tuning methods and four
+clean-loss budgets are exploratory model selection, not final RAID results.
+Its recorded development source IDs are excluded from the full-run split
+because pilot test outcomes were used to choose the final selector.
+
+`archive/raid_pilots/compare_trimmed_mean.py` is another archived, CPU-only pilot analysis. It
+tests one-sided token trimming at fractions 0, 0.5%, 1%, 2.5%, 5%, 10%, and
+20% under full-universal and eligible-universal fitting. It reuses the same
+score packs and writes only below
+`results/raid/<run-id>/trimmed_mean_comparison_v1/`.
+
+`archive/raid_pilots/compare_binoculars_components.py` is an archived Binoculars-only pilot ablation. It
+compares the existing local-gap clipping rule with clipping the oriented
+performer-NLL and cross-entropy components separately. The two component bounds
+share one quantile index, avoiding a post-pilot 49-pair search. It writes below
+`results/raid/<run-id>/binoculars_component_comparison_v1/`.

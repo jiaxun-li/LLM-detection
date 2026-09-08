@@ -7,8 +7,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tools.exports.export_helpers import clean_rows, clipping_rows, robustness_rows
 from RAID.raid_plot import _labels
-from scripts.export_final_publication_bundle import (
+from tools.exports.export_final_publication_bundle import (
     EXPECTED_PRIMARY_ROWS,
     PRIMARY_DETECTORS,
     RAID_SOURCE_DETECTORS,
@@ -16,10 +17,38 @@ from scripts.export_final_publication_bundle import (
     verify_primary_bundle,
     verify_raid_results,
 )
-from llm_detection.revision_artifacts import RAID_ARTIFACTS
+from experiment_core.infrastructure.revision_artifacts import RAID_ARTIFACTS
 
 
 class FinalPublicationExportTests(unittest.TestCase):
+    def test_primary_summary_views_deduplicate_repeated_curve_values(self) -> None:
+        rows = []
+        for mode in ("random", "tail"):
+            for ratio in ("0.0", "0.5"):
+                for aggregation in ("raw", "clipped"):
+                    rows.append(
+                        {
+                            "run_id": "run",
+                            "dataset": "xsum",
+                            "model": "model",
+                            "detector": "rank",
+                            "analysis": "primary_frozen_mixture",
+                            "target_fpr": "0.01",
+                            "contamination_mode": mode,
+                            "requested_contamination_ratio": ratio,
+                            "aggregation": aggregation,
+                        }
+                    )
+        self.assertEqual(len(clean_rows(rows)), 2)
+        self.assertEqual(len(robustness_rows(rows)), 4)
+        clipped = clipping_rows(rows)
+        self.assertEqual(len(clipped), 3)
+        self.assertEqual(
+            sum(row["requested_contamination_ratio"] == "0.0" for row in clipped),
+            1,
+        )
+
+
     def test_raid_labels_include_only_available_detectors(self) -> None:
         rows = [
             {"detector": "log_likelihood"},

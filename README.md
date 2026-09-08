@@ -7,9 +7,18 @@ ICLR/AISTATS-quality study across XSum, SQuAD, and WritingPrompts.
 
 ## Canonical guides
 
-- [`SCIENTIFIC_WORKFLOW.md`](SCIENTIFIC_WORKFLOW.md) defines the frozen
+- Start with the [documentation index](docs/README.md),
+  [configuration guide](docs/CONFIGURATION.md), and
+  [local archive catalog](docs/ARCHIVE_CATALOG.md).
+- [`docs/REPOSITORY_MAP.md`](docs/REPOSITORY_MAP.md) explains active scripts, archived
+  studies, and local downloads. The current released analysis is the corrected
+  nine-cell primary study plus RAID; the broader matrix below records the
+  original study design, not a claim that every planned cell was completed.
+- [`docs/DETECTOR_REVISION.md`](docs/DETECTOR_REVISION.md) specifies the corrected
+  detector reanalysis used by the final results.
+- [`docs/primary/SCIENTIFIC_WORKFLOW.md`](docs/primary/SCIENTIFIC_WORKFLOW.md) defines the frozen
   21-cell protocol, leakage rules, metrics, result classes, and interpretation.
-- [`CODEBASE_GUIDE.md`](CODEBASE_GUIDE.md) maps that protocol to current
+- [`docs/CODEBASE_GUIDE.md`](docs/CODEBASE_GUIDE.md) maps that protocol to current
   modules, files, I/O contracts, resume behavior, tests, and Delta operations.
 
 Read both before changing a configuration or launching a full-scale cell.
@@ -65,8 +74,8 @@ python run_experiment.py --config configs/smoke.json --dataset xsum \
   --model Qwen/Qwen2.5-0.5B --run-id smoke-xsum-qwen --stage evaluate
 ```
 
-`prepare_real_contamination.py`, `score_real_text.py`, and
-`evaluate_real_clipping.py` remain as aliases for these three stages. They now
+`archive/legacy_entrypoints/prepare_real_contamination.py`, `archive/legacy_entrypoints/score_real_text.py`, and
+`archive/legacy_entrypoints/evaluate_real_clipping.py` remain as aliases for these three stages. They now
 accept the configuration-first arguments above; the old prototype flags are no
 longer supported.
 
@@ -122,12 +131,12 @@ specifications.
 
 ## NCSA Delta
 
-See [`DELTA.md`](DELTA.md). The normal job uses `gpuA100x4`; `gpuH200x8` is an
+See [`docs/delta/DELTA.md`](docs/delta/DELTA.md). The normal job uses `gpuA100x4`; `gpuH200x8` is an
 explicit opt-in for confirmed large-model runs such as Qwen 72B.
 
 Before any matrix work, use the isolated one-GPU Qwen 0.5B gate in
-[`DELTA_SMOKE.md`](DELTA_SMOKE.md). It has an account-aware submission wrapper,
+[`docs/delta/DELTA_SMOKE.md`](docs/delta/DELTA_SMOKE.md). It has an account-aware submission wrapper,
 strict output validation, and a mandatory duplicate-free resume pass.
 
 Implementation status is audited in
-[`REQUIREMENT_CHECKLIST.md`](REQUIREMENT_CHECKLIST.md).
+[`docs/primary/REQUIREMENT_CHECKLIST.md`](docs/primary/REQUIREMENT_CHECKLIST.md).

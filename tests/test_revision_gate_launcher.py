@@ -2,7 +2,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import unittest
 
-from scripts.check_detector_revision_gate import require_success
+from tools.validation.check_detector_revision_gate import require_success
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -18,8 +18,8 @@ class GateLauncherTests(unittest.TestCase):
                                                     skipped=skipped, testsRun=count))
 
     def test_wrapper_initializes_environment_and_checks_reference_before_tests(self):
-        wrapper = (ROOT / "scripts/delta_detector_revision.sbatch").read_text()
-        runner = "srun python -u scripts/check_detector_revision_gate.py"
+        wrapper = (ROOT / "tools/delta/delta_detector_revision.sbatch").read_text()
+        runner = "srun python -u tools/validation/check_detector_revision_gate.py"
         self.assertLess(wrapper.index("module reset"), wrapper.index("module load miniforge3-python"))
         self.assertLess(wrapper.index("module load miniforge3-python"), wrapper.index("/bin/activate"))
         self.assertLess(wrapper.index("/bin/activate"), wrapper.index(runner))

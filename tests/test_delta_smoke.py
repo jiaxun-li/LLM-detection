@@ -8,9 +8,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from llm_detection.config import load_config, total_examples
-from llm_detection.io import iter_jsonl
-from llm_detection.smoke_validation import DEBUG_LABEL, EXPECTED_DETECTORS
+from experiment_core.infrastructure.config import load_config, total_examples
+from experiment_core.infrastructure.io import iter_jsonl
+from experiment_core.validation.smoke_validation import DEBUG_LABEL, EXPECTED_DETECTORS
 
 
 class DeltaSmokeTests(unittest.TestCase):
@@ -42,13 +42,13 @@ class DeltaSmokeTests(unittest.TestCase):
         self.assertEqual(config["result_label"], DEBUG_LABEL)
 
     def test_slurm_job_and_wrapper_have_static_safety_guards(self) -> None:
-        job = Path("scripts/delta_smoke_qwen_0_5b.sbatch").read_text(
+        job = Path("tools/delta/delta_smoke_qwen_0_5b.sbatch").read_text(
             encoding="utf-8"
         )
-        wrapper = Path("scripts/submit_delta_smoke.sh").read_text(
+        wrapper = Path("tools/delta/submit_delta_smoke.sh").read_text(
             encoding="utf-8"
         )
-        setup = Path("scripts/setup_delta_env.sh").read_text(encoding="utf-8")
+        setup = Path("tools/delta/setup_delta_env.sh").read_text(encoding="utf-8")
         for directive in (
             "#SBATCH --partition=gpuA100x4",
             "#SBATCH --gpus-per-node=1",
@@ -83,7 +83,7 @@ class DeltaSmokeTests(unittest.TestCase):
             process = subprocess.run(
                 [
                     sys.executable,
-                    "scripts/synthetic_delta_smoke.py",
+                    "tools/validation/synthetic_delta_smoke.py",
                     "--output-dir",
                     str(output),
                 ],

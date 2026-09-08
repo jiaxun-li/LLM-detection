@@ -7,17 +7,17 @@ import datetime as dt
 import re
 from pathlib import Path
 
-from llm_detection.config import load_config, resolved_run_config
-from llm_detection.pipeline import (
+from experiment_core.infrastructure.config import load_config, resolved_run_config
+from experiment_core.preparation.pipeline import (
     evaluate_run,
     prepare_run_data,
     score_run,
     select_source_manifest,
     source_manifest_path,
 )
-from llm_detection.runtime import build_manifest, update_manifest
-from llm_detection.runtime import load_manifest
-from llm_detection.io import iter_jsonl
+from experiment_core.infrastructure.runtime import build_manifest, update_manifest
+from experiment_core.infrastructure.runtime import load_manifest
+from experiment_core.infrastructure.io import iter_jsonl
 
 
 def safe_name(value: str) -> str:

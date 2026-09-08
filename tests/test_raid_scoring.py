@@ -19,7 +19,7 @@ from RAID.raid_scoring import (
     score_raid_jsonl,
 )
 from RAID.raid_data import raid_row_key as prepared_raid_row_key
-from llm_detection.scoring import numpy_cross_entropy, numpy_exact_token_features
+from experiment_core.detectors.scoring import numpy_cross_entropy, numpy_exact_token_features
 
 
 class FakeTokenizer:

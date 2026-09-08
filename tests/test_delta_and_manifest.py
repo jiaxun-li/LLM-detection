@@ -3,14 +3,14 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from llm_detection.config import load_config, resolved_run_config
-from llm_detection.runtime import build_manifest
+from experiment_core.infrastructure.config import load_config, resolved_run_config
+from experiment_core.infrastructure.runtime import build_manifest
 
 
 class DeltaAndManifestTests(unittest.TestCase):
     def test_delta_partitions_and_matrix_are_static_validated(self) -> None:
-        job = Path("scripts/delta_experiment.sbatch").read_text(encoding="utf-8")
-        submit = Path("scripts/submit_delta_matrix.sh").read_text(encoding="utf-8")
+        job = Path("tools/delta/delta_experiment.sbatch").read_text(encoding="utf-8")
+        submit = Path("tools/delta/submit_delta_matrix.sh").read_text(encoding="utf-8")
         self.assertIn("#SBATCH --partition=gpuA100x4", job)
         self.assertIn("gpuA100x4)", submit)
         self.assertIn("gpuH200x8)", submit)

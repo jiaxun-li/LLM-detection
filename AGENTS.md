@@ -1,8 +1,16 @@
 # Repository context for agents
 
+The current active/archive file classification is in `docs/REPOSITORY_MAP.md`.
+Final study code lives in `experiment_core/`, `RAID/`, and `tools/`; historical
+studies and pilot tools live in the Git-ignored `archive/`. Archived programs run
+from the repository root and their tests live in `archive/tests/`. The active
+`tests/` suite must work without the local archive. Never move or edit local
+`paper/` materials as part of experiment maintenance. `downloads/current/`
+contains the validated final bundle; older downloads are in `downloads/archive/`.
+
 Read this file before changing code or giving Delta commands. The canonical
-scientific description is `SCIENTIFIC_WORKFLOW.md`; the canonical code and
-operations reference is `CODEBASE_GUIDE.md`.
+scientific description is `docs/primary/SCIENTIFIC_WORKFLOW.md`; the canonical code and
+operations reference is `docs/CODEBASE_GUIDE.md`.
 
 ## User and repository locations
 
@@ -78,9 +86,9 @@ models.
 
 The Granite-XSum paired splice-artifact audit is a separate diagnostic, not a
 22nd paper cell. Its frozen protocol is in
-`configs/splice_artifact_audit_granite_xsum.json`, its entry point is
-`run_splice_artifact_audit.py`, and its Delta wrapper is
-`scripts/delta_splice_artifact_audit.sbatch`. It compares human versus
+`archive/studies/splice_audit/splice_artifact_audit_granite_xsum.json`, its entry point is
+`archive/studies/splice_audit/run_splice_artifact_audit.py`, and its Delta wrapper is
+`archive/studies/splice_audit/delta_splice_artifact_audit.sbatch`. It compares human versus
 same-model donor text under paired token windows and paired sentence positions,
 while reusing the completed Granite-XSum cell's frozen thresholds, directions,
 and clipping specifications. Audit outputs belong below
@@ -88,10 +96,10 @@ and clipping specifications. Audit outputs belong below
 implementation is not evidence that the Delta gate or full audit has passed;
 check its own manifest, row counts, stderr, summary, and completion marker.
 
-The benchmark-centered realistic-edit study lives under `Beemo/`. Its frozen
-local protocol is `Beemo/config.json`; the authoritative entry point is
-`Beemo/run_beemo.py`; and the scientific and Delta instructions are
-`Beemo/SCIENTIFIC_DESIGN.md` and `Beemo/DELTA_GUIDE.md`. It treats expert edits
+The benchmark-centered realistic-edit study lives under `archive/studies/beemo/`. Its frozen
+local protocol is `archive/studies/beemo/config.json`; the authoritative entry point is
+`archive/studies/beemo/run_beemo.py`; and the scientific and Delta instructions are
+`archive/studies/beemo/SCIENTIFIC_DESIGN.md` and `archive/studies/beemo/DELTA_GUIDE.md`. It treats expert edits
 as machine-origin positives, keeps all nine variants of a record in one split
 and bootstrap cluster, and uses 437/875/875 records for clipping tuning,
 human-only calibration, and testing. Local synthetic tests are not evidence of
@@ -100,7 +108,7 @@ counts, and stderr before describing it as passed.
 
 ## Evaluator status
 
-`llm_detection/evaluation.py` now precomputes raw and frozen-clipped scalar
+`experiment_core/analysis/evaluation.py` now precomputes raw and frozen-clipped scalar
 scores once per detector/analysis and reuses indexed NumPy arrays for
 calibration, point metrics, clustered bootstrap intervals, and robustness AUC.
 The local no-download suite passed 38 tests with two Torch-dependent skips when

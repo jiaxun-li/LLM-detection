@@ -9,8 +9,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from llm_detection.config import load_config, resolved_run_config, total_examples
-from llm_detection.data import (
+from experiment_core.infrastructure.config import load_config, resolved_run_config, total_examples
+from experiment_core.preparation.data import (
     assign_splits_and_generation_seeds,
     expected_rows_per_source,
     random_token_contamination,
@@ -18,13 +18,12 @@ from llm_detection.data import (
     tail_token_contamination,
     validate_disjoint_splits,
 )
-from llm_detection.io import iter_jsonl
-from llm_detection.pipeline import (
+from experiment_core.infrastructure.io import iter_jsonl
+from experiment_core.preparation.pipeline import (
     construct_contaminated_data,
     generate_base_examples,
     select_source_manifest,
 )
-from scripts.audit_contamination_roundtrip import audit_cached_constructions
 
 
 class ConfigAndDataTests(unittest.TestCase):
@@ -110,56 +109,6 @@ class ConfigAndDataTests(unittest.TestCase):
         contaminated = [row for row in rows if row["contamination_mode"] != "none"]
         self.assertEqual({row["length_delta_tokens"] for row in contaminated}, {-1})
 
-    def test_roundtrip_audit_covers_every_cached_construction(self) -> None:
-        class StableTokenizer:
-            def encode(self, text, add_special_tokens=False):
-                del add_special_tokens
-                return [int(value) for value in text.split()]
-
-            def decode(
-                self,
-                token_ids,
-                skip_special_tokens=True,
-                clean_up_tokenization_spaces=False,
-            ):
-                del skip_special_tokens, clean_up_tokenization_spaces
-                return " ".join(str(value) for value in token_ids)
-
-        config = copy.deepcopy(load_config("configs/smoke.json"))
-        config["dataset"] = "writingprompts"
-        config["target_model"] = "Qwen/Qwen2.5-32B"
-        config["contamination"].update(
-            {
-                "ratios": [0.0, 0.5],
-                "random_draws": 2,
-                "max_length_delta_tokens": 0,
-            }
-        )
-        base = [
-            {
-                "dataset": "writingprompts",
-                "target_model": "Qwen/Qwen2.5-32B",
-                "sample_id": "source-1",
-                "llm_token_ids": list(range(10, 20)),
-                "human_continuation": "1 2 3 4 5 6 7 8 9 10",
-            }
-        ]
-        tail = [
-            {
-                "sample_id": "source-1",
-                "ranked_candidates": [
-                    {"candidate_id": 0, "token_ids": [1, 2, 3, 4, 5], "nll": 2.0},
-                    {"candidate_id": 1, "token_ids": [6, 7, 8, 9, 10], "nll": 1.0},
-                ],
-            }
-        ]
-        report = audit_cached_constructions(
-            base, tail, StableTokenizer(), config, top_k=3
-        )
-        self.assertEqual(report["source_rows"], 1)
-        self.assertEqual(report["constructed_rows_checked"], 3)
-        self.assertEqual(report["rows_exceeding_tolerance"], 0)
-        self.assertEqual(len(report["condition_summary"]), 2)
 
     def test_paper_configuration_records_scientific_defaults(self) -> None:
         config = load_config("configs/paper.json")

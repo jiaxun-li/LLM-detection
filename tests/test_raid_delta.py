@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class RaidDeltaContractTests(unittest.TestCase):
     def test_frozen_config_matches_scientific_protocol(self):
-        config = json.loads((ROOT / "RAID" / "config.json").read_text(encoding="utf-8"))
+        config = json.loads((ROOT / "configs" / "raid.json").read_text(encoding="utf-8"))
         self.assertEqual(config["selection"]["split_fractions"], {
             "clipping_tuning": 0.4,
             "calibration": 0.2,
@@ -32,20 +32,6 @@ class RaidDeltaContractTests(unittest.TestCase):
         self.assertEqual(config["scoring"]["max_tokens"], 512)
         self.assertFalse(config["scoring"]["trust_remote_code"])
 
-    def test_delta_wrapper_has_storage_gpu_and_resume_guards(self):
-        wrapper = (ROOT / "RAID" / "delta_raid.sbatch").read_text(encoding="utf-8")
-        submit = (ROOT / "RAID" / "submit_raid.sh").read_text(encoding="utf-8")
-        self.assertIn("#SBATCH --partition=gpuA100x4", wrapper)
-        self.assertIn("#SBATCH --gpus-per-node=2", wrapper)
-        self.assertNotIn("#SBATCH --gpus-per-node=4", wrapper)
-        self.assertIn("/projects/bhuc/${USER}/venvs/delta-smoke", wrapper)
-        self.assertIn('torch.version.cuda == "12.8"', wrapper)
-        self.assertIn("rapidfuzz", wrapper)
-        self.assertIn("RAID_DATA_PATH", wrapper)
-        self.assertIn("/work/hdd/*", wrapper)
-        self.assertIn('RAID_STAGE="${RAID_STAGE:-all}"', wrapper)
-        self.assertIn('--gpus-per-node=2', submit)
-        self.assertIn("bhuc-delta-gpu", submit)
 
     def test_sharded_delta_graph_separates_cpu_and_gpu_stages(self):
         prepare = (ROOT / "RAID" / "delta_raid_prepare.sbatch").read_text(encoding="utf-8")
@@ -78,7 +64,7 @@ class RaidDeltaContractTests(unittest.TestCase):
         self.assertIn('CPU_GPU_ARGS+=(--gpus-per-node=', submit)
 
     def test_delta_guide_requires_smoke_validation_before_full_run(self):
-        guide = (ROOT / "RAID" / "DELTA_GUIDE.md").read_text(encoding="utf-8")
+        guide = (ROOT / "docs" / "raid" / "DELTA_GUIDE.md").read_text(encoding="utf-8")
         self.assertIn("Mandatory four-shard smoke gate", guide)
         self.assertIn("LIMIT_SOURCES=64", guide)
         self.assertIn("BOOTSTRAP_REPETITIONS=100", guide)
@@ -90,17 +76,6 @@ class RaidDeltaContractTests(unittest.TestCase):
         self.assertIn("EXCLUDE_SOURCE_IDS_PATH", guide)
         self.assertIn("CPU_GPUS_PER_NODE=1", guide)
 
-    def test_tuning_comparison_wrapper_reuses_scores_with_one_reserved_gpu(self):
-        wrapper = (
-            ROOT / "RAID" / "delta_raid_tuning_comparison.sbatch"
-        ).read_text(encoding="utf-8")
-        self.assertIn("#SBATCH --gpus-per-node=1", wrapper)
-        self.assertIn("#SBATCH --mem=120G", wrapper)
-        self.assertIn("RAID/compare_tuning_methods.py", wrapper)
-        self.assertIn("falcon_scores.jsonl", wrapper)
-        self.assertIn("binoculars_scores.jsonl", wrapper)
-        self.assertNotIn("run_raid.py --stage score", wrapper)
-        self.assertIn("comparison.complete.json", wrapper)
 
     def test_bootstrap_promotion_reuses_scores_without_inference(self):
         wrapper = (
@@ -119,29 +94,7 @@ class RaidDeltaContractTests(unittest.TestCase):
         self.assertIn("promote_bootstrap_evaluation", script)
         self.assertIn("_assert_point_estimates_unchanged", script)
 
-    def test_trimmed_mean_wrapper_reuses_scores_with_one_reserved_gpu(self):
-        wrapper = (
-            ROOT / "RAID" / "delta_raid_trimmed_mean.sbatch"
-        ).read_text(encoding="utf-8")
-        self.assertIn("#SBATCH --gpus-per-node=1", wrapper)
-        self.assertIn("#SBATCH --mem=120G", wrapper)
-        self.assertIn("RAID/compare_trimmed_mean.py", wrapper)
-        self.assertIn("falcon_scores.jsonl", wrapper)
-        self.assertIn("binoculars_scores.jsonl", wrapper)
-        self.assertNotIn("run_raid.py --stage score", wrapper)
-        self.assertIn("comparison.complete.json", wrapper)
 
-    def test_binoculars_component_wrapper_reuses_existing_score_packs(self):
-        wrapper = (
-            ROOT / "RAID" / "delta_raid_binoculars_components.sbatch"
-        ).read_text(encoding="utf-8")
-        self.assertIn("#SBATCH --gpus-per-node=1", wrapper)
-        self.assertIn("#SBATCH --mem=120G", wrapper)
-        self.assertIn("RAID/compare_binoculars_components.py", wrapper)
-        self.assertIn("falcon_scores.jsonl", wrapper)
-        self.assertIn("binoculars_scores.jsonl", wrapper)
-        self.assertNotIn("run_raid.py --stage score", wrapper)
-        self.assertIn("comparison.complete.json", wrapper)
 
 
 if __name__ == "__main__":

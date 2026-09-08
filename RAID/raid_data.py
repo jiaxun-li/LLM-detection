@@ -28,8 +28,8 @@ from itertools import groupby
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 
-from llm_detection.data import stable_int
-from llm_detection.io import AppendSafeJsonlWriter, atomic_write_json, iter_jsonl
+from experiment_core.preparation.data import stable_int
+from experiment_core.infrastructure.io import AppendSafeJsonlWriter, atomic_write_json, iter_jsonl
 
 
 RAID_ATTACKS = (

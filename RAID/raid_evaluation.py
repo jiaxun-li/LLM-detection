@@ -8,14 +8,14 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import numpy as np
-from llm_detection.evaluation import ALL_METHODS, actual_fpr, auroc, calibration_threshold, percentile_interval
-from llm_detection.io import atomic_write_json
-from llm_detection.scoring import EPS
-from llm_detection.detector_revision import (REVISION, ORIGIN_NLL, ORIGIN_DENOMINATOR,
+from experiment_core.analysis.evaluation import ALL_METHODS, actual_fpr, auroc, calibration_threshold, percentile_interval
+from experiment_core.infrastructure.io import atomic_write_json
+from experiment_core.detectors.scoring import EPS
+from experiment_core.detectors.detector_revision import (REVISION, ORIGIN_NLL, ORIGIN_DENOMINATOR,
     ORIGIN_NUMERATOR, origin_components, origin_score, constant_clean_scores,
     require_valid_lrr_clipping_spec, structurally_constant_candidate,
     valid_lrr_clipping_spec)
-from llm_detection.evaluation import REVISED_METHODS
+from experiment_core.analysis.evaluation import REVISED_METHODS
 from RAID.raid_data import measure_realized_contamination
 
 DETECTORS = tuple(ALL_METHODS)

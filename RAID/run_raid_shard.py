@@ -27,7 +27,7 @@ def main() -> None:
     parser.add_argument("--shard-index", required=True, type=int)
     parser.add_argument("--num-shards", required=True, type=int)
     parser.add_argument("--workspace", default=".")
-    parser.add_argument("--config", default="RAID/config.json")
+    parser.add_argument("--config", default="configs/raid.json")
     args = parser.parse_args()
 
     workspace = Path(args.workspace).resolve()

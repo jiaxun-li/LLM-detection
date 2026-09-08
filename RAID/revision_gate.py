@@ -8,14 +8,14 @@ import tempfile
 from collections import Counter
 from pathlib import Path
 
-from llm_detection.io import AppendSafeJsonlWriter, atomic_write_json, iter_jsonl
+from experiment_core.infrastructure.io import AppendSafeJsonlWriter, atomic_write_json, iter_jsonl
 from RAID.raid_data import raid_row_key
 from RAID.raid_evaluation import (condition, domain, human, source, split,
     stable_row_key, merge_score_rows, evaluate_raid, write_evaluation_artifacts, _validate)
 
 
 def load_gate_tokenizer(config):
-    from llm_detection.scoring import _transformers
+    from experiment_core.detectors.scoring import _transformers
     _, auto_tokenizer = _transformers()
     tokenizer = auto_tokenizer.from_pretrained(
         "tiiuae/falcon-7b", revision=config["tokenizer_revision"],
@@ -113,9 +113,9 @@ def run_pipeline_probe(selected, scorer, source_dir, cache_path, destination, co
     """
     from RAID.raid_scoring import score_raid_jsonl
     from RAID.revise_detectors import compact_rows
-    from llm_detection.detector_revision import REVISION
-    from llm_detection.revision_artifacts import artifact_digest
-    from llm_detection.evaluation import REVISED_METHODS
+    from experiment_core.detectors.detector_revision import REVISION
+    from experiment_core.infrastructure.revision_artifacts import artifact_digest
+    from experiment_core.analysis.evaluation import REVISED_METHODS
 
     with tempfile.TemporaryDirectory(prefix="gate-probe-", dir=destination) as temp:
         root = Path(temp)
