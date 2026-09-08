@@ -57,11 +57,28 @@ def _number(row: dict[str, str], name: str) -> float:
 
 
 def _labels(rows):
+    available = {row["detector"] for row in rows}
     labels = dict(DETECTOR_LABELS)
-    if any(r["detector"] == "binocular_origin" for r in rows):
-        labels.pop("binoculars")
-        labels.update(binocular_gap="Binocular-gap", binocular_origin="Binocular-origin")
-    return labels
+    if "binocular_origin" in available:
+        labels.update(
+            binocular_gap="Binocular-gap",
+            binocular_origin="Binocular-origin",
+        )
+    return {
+        detector: labels.get(detector, detector)
+        for detector in (
+            "log_likelihood",
+            "rank",
+            "log_rank",
+            "lrr",
+            "entropy",
+            "entropy_gap",
+            "binoculars",
+            "binocular_gap",
+            "binocular_origin",
+        )
+        if detector in available
+    }
 
 
 def _axes_grid(plt: Any, count: int = 7) -> tuple[Any, list[Any]]:
