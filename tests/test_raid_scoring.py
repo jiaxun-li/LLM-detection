@@ -154,10 +154,16 @@ class RAIDScoringTests(unittest.TestCase):
             {"log_likelihood", "rank", "log_rank", "lrr", "entropy", "entropy_gap"},
         )
         expected = numpy_exact_token_features(logits[:2], np.array([2, 0]))
-        np.testing.assert_allclose(result["token_features"]["logp"], expected["logp"])
+        # Torch accumulates in float32; the independent NumPy reference uses
+        # float64. Allow float32 rounding, not a change in the scoring formula.
+        np.testing.assert_allclose(
+            result["token_features"]["logp"], expected["logp"],
+            rtol=1e-6, atol=1e-7,
+        )
         np.testing.assert_allclose(
             result["token_features"]["entropy_gap"],
             -expected["logp"] - expected["entropy"],
+            rtol=1e-6, atol=1e-7,
         )
         scorer.validate_existing_row(result)
 
@@ -198,10 +204,13 @@ class RAIDScoringTests(unittest.TestCase):
         performer = numpy_exact_token_features(performer_logits[:2], np.array([1, 2]))
         gap = -performer["logp"] - xent
         np.testing.assert_allclose(
-            result["token_features"]["local_gap"], gap, rtol=1e-6
+            result["token_features"]["local_gap"], gap, rtol=1e-6, atol=1e-7
         )
-        self.assertAlmostEqual(
-            result["doc_scores"]["binoculars"], math.exp(float(gap.mean())), places=6
+        # Compare float32-derived scores to the float64 formula relatively;
+        # a decimal-place assertion is unnecessarily strict at this scale.
+        np.testing.assert_allclose(
+            result["doc_scores"]["binoculars"], math.exp(float(gap.mean())),
+            rtol=1e-6, atol=1e-7,
         )
         scorer.validate_existing_row(result)
 
