@@ -1,5 +1,15 @@
 # Paired intervals for the mean over eleven attacks
 
+The analysis also reports paired clipped-minus-raw human FPR intervals in
+`paired_fpr_ci.csv`. Each of the 5,149 human sources contributes once; humans
+are not replicated per attack. The same domain-stratified bootstrap draws are
+used for TPR and FPR. Positive FPR change means more false positives. An interval
+containing zero does not establish equivalence or noninferiority. It is an
+interval for the change, not a test against the nominal 5% target. The updated
+compact decisions include `human_hits`, and joint replicates include
+`fpr_changes`. Rerunning writes a new job-specific directory, preserving the
+previous TPR-only output. No model scoring, fitting or recalibration occurs.
+
 `tools/reanalysis/raid_attack_mean_ci.py` adds an analysis of the accepted v4.1
 RAID release without changing its results. It streams the original Falcon pack
 and four accepted origin packs on Delta. It does not load models, select bounds,

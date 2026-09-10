@@ -45,17 +45,31 @@ def joint_bootstrap(hits, domains, repetitions=2000, seed=481516):
         raise ValueError("Invalid source hits/domains")
     if repetitions < 2:
         raise ValueError("At least two bootstrap repetitions required")
-    per_source = hits.mean(axis=1)
+    return bootstrap_source_means(hits.mean(axis=1), domains, repetitions, seed)
+
+
+def bootstrap_source_means(per_source, domains, repetitions=2000, seed=481516):
+    """Paired domain-stratified bootstrap; one observation per source.
+
+    For FPR, pass each human's three binary decisions directly (not replicated
+    once per attack). For attack TPR, pass each source's eleven-attack mean.
+    """
+    per_source = np.asarray(per_source, dtype=float)
+    if (per_source.ndim != 3 or per_source.shape[2] != 3 or len(per_source) == 0
+            or len(domains) != len(per_source) or repetitions < 2
+            or not np.isfinite(per_source).all()
+            or np.any((per_source < 0) | (per_source > 1))):
+        raise ValueError("Invalid per-source decisions/means")
     delta = per_source[:, :, 1:] - per_source[:, :, :1]
     groups = [np.flatnonzero(np.asarray(domains) == d) for d in sorted(set(domains))]
     rng = np.random.default_rng(seed)
-    samples = np.empty((repetitions, hits.shape[2], 2))
+    samples = np.empty((repetitions, per_source.shape[1], 2))
     for rep in range(repetitions):
-        total = np.zeros((hits.shape[2], 2))
+        total = np.zeros((per_source.shape[1], 2))
         for indices in groups:
             w = rng.multinomial(len(indices), np.full(len(indices), 1 / len(indices)))
             total += np.einsum("i,ijk->jk", w, delta[indices])
-        samples[rep] = total / len(hits)
+        samples[rep] = total / len(per_source)
     return per_source.mean(axis=0), np.quantile(samples, [.025, .975], axis=0), samples
 
 
@@ -160,6 +174,9 @@ def main():
     print("All per-attack TPRs and human FPRs match accepted results: PASS", flush=True)
     hits = np.asarray([[[records[d][sid, c] for d in DETECTORS] for c in ATTACKS] for sid in ids], dtype=np.uint8)
     point, intervals, samples = joint_bootstrap(hits, [domains[sid] for sid in ids], args.repetitions, args.seed)
+    human_hits = np.asarray([[records[d][sid, "human"] for d in DETECTORS] for sid in ids], dtype=np.uint8)
+    fpoint, fintervals, fsamples = bootstrap_source_means(
+        human_hits, [domains[sid] for sid in ids], args.repetitions, args.seed)
     if before != {str(p): (p.stat().st_size, p.stat().st_mtime_ns) for p in inputs}:
         raise ValueError("Input changed during analysis")
     output_rows = []
@@ -169,12 +186,23 @@ def main():
                                "clipped_tpr": float(point[i, j+1]), "paired_tpr_difference": float(point[i, j+1]-point[i, 0]),
                                "ci_low": float(intervals[0, i, j]), "ci_high": float(intervals[1, i, j])})
     out.mkdir(parents=True, exist_ok=False)
+    fpr_rows = []
+    for i, detector in enumerate(DETECTORS):
+        for j, scope in enumerate(("full", "eligible")):
+            fpr_rows.append({"detector": detector, "scope": scope,
+                "raw_fpr": float(fpoint[i, 0]), "clipped_fpr": float(fpoint[i, j+1]),
+                "paired_fpr_difference": float(fpoint[i, j+1]-fpoint[i, 0]),
+                "ci_low": float(fintervals[0, i, j]), "ci_high": float(fintervals[1, i, j])})
+    with (out / "paired_fpr_ci.csv").open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(fpr_rows[0]))
+        writer.writeheader()
+        writer.writerows(fpr_rows)
     with (out / "all_attack_mean_ci.csv").open("w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(output_rows[0]))
         writer.writeheader()
         writer.writerows(output_rows)
-    np.savez_compressed(out / "joint_bootstrap.npz", changes=samples, detectors=DETECTORS, scopes=("full", "eligible"))
-    np.savez_compressed(out / "test_decisions.npz", hits=hits, source_ids=ids,
+    np.savez_compressed(out / "joint_bootstrap.npz", changes=samples, fpr_changes=fsamples, detectors=DETECTORS, scopes=("full", "eligible"))
+    np.savez_compressed(out / "test_decisions.npz", hits=hits, human_hits=human_hits, source_ids=ids,
                         domains=[domains[sid] for sid in ids], detectors=DETECTORS, attacks=ATTACKS)
     (out / "analysis.complete.json").write_text(json.dumps({"status": "complete", "revision_id": REVISION_ID,
         "bootstrap_repetitions": args.repetitions, "seed": args.seed, "sources": len(ids), "attacks": ATTACKS,
@@ -183,10 +211,13 @@ def main():
         "implementation_hashes": {name: digest(ROOT / name) for name in
             ("RAID/raid_evaluation.py", "experiment_core/detectors/detector_revision.py")},
         "output_hashes": {name: digest(out / name) for name in
-            ("all_attack_mean_ci.csv", "joint_bootstrap.npz", "test_decisions.npz")}}, indent=2))
+            ("all_attack_mean_ci.csv", "paired_fpr_ci.csv", "joint_bootstrap.npz", "test_decisions.npz")}}, indent=2))
     print("\nALL-ATTACK MEAN TPR CHANGE: percentage points [95% CI]", flush=True)
     for r in output_rows:
         print(f"{r['detector']:18} {r['scope']:8} {100*r['paired_tpr_difference']:+.3f} [{100*r['ci_low']:+.3f}, {100*r['ci_high']:+.3f}]")
+    print("\nHUMAN FPR CHANGE: percentage points [95% CI]; positive = more false positives", flush=True)
+    for r in fpr_rows:
+        print(f"{r['detector']:18} {r['scope']:8} {100*r['paired_fpr_difference']:+.3f} [{100*r['ci_low']:+.3f}, {100*r['ci_high']:+.3f}]")
     print(f"Saved: {out}", flush=True)
 
 
