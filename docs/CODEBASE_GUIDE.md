@@ -10,6 +10,34 @@ design and interpretation rules, see
 models, CUDA, modules, or Slurm are marked **cluster-only**; the unit and
 synthetic tests require no downloads.
 
+## Evidence and protocol layers
+
+The released study is **nine primary cells plus RAID**, not the entire 21-cell
+model matrix still listed in `configs/paper.json`. That larger matrix is a
+historical design/launcher capability, not evidence of completed experiments.
+Use the final bundle's per-cell source/revision identities when writing a
+report; do not select the newest directory by its timestamp.
+
+Three layers must be distinguished:
+
+1. `run_experiment.py` and `RAID/run_raid.py` retain the original preparation,
+   scoring and evaluation workflow. Their `binoculars` name denotes the legacy
+   exponential mean-gap calculation, not the corrected original-paper ratio.
+2. `tools/reanalysis/reevaluate_detector_revision.py` and
+   `RAID/revise_detectors.py` apply the detector amendment to preserved sources.
+   Primary uses saved prompt-conditioned features. RAID uses separately gated
+   output-only official-origin components. LRR direction and candidate guards
+   are enabled by the revision configuration, not by renaming a CSV column.
+3. `tools/exports/export_final_publication_bundle.py` validates and packages
+   accepted results. It filters the legacy gap from paper-facing tables and
+   generates plots; it does not refit bounds, thresholds, or bootstrap intervals.
+
+The primary final bundle combines eight September 4 corrected revisions with
+the later Qwen32–SQuAD LRR-v4.2 correction. Retaining source eight-detector
+reports beside filtered seven-detector tables is intentional provenance, not
+a contradiction in the reported detector set. See the final bundle manifest
+and [DETECTOR_REVISION.md](DETECTOR_REVISION.md).
+
 ## Active repository map
 
 See [docs/REPOSITORY_MAP.md](REPOSITORY_MAP.md) for script purposes and the complete
@@ -39,15 +67,18 @@ historical configuration; relocating files does not change detector formulas.
 
 Deprecated stage aliases, toy experiments, Beemo, the paired splice diagnostic,
 pilot selector comparisons, historical exporters and the old monolithic RAID
-launcher now live under `archive/`. Archived programs still use the shared
-implementation and are run from the repository root. Their tests are in
-`archive/tests/` and can be run separately. The active suite under `tests/`
+launcher now live under `archive/`. Retained archived programs reference shared
+implementation and are intended to run from the repository root. This is not
+a guarantee of runtime compatibility or historical numerical reproduction.
+Their tests are in `archive/tests/` and can be run separately when present.
+The active suite under `tests/`
 does not import the local archive. See [ARCHIVE_CATALOG.md](ARCHIVE_CATALOG.md).
 
 The final exporter uses active `tools/exports/export_helpers.py`; it does not
-depend on the archived Beemo exporter. Python caches and the tracked macOS
-`.DS_Store` were removed. The allocation checklist and `paper/` are user-owned
-writing/planning material and were left untouched.
+depend on the archived Beemo exporter. Python caches and `.DS_Store` are ignored
+maintenance artifacts, not evidence of experiment completion. The allocation
+checklist and `paper/` are user-owned writing/planning material and are outside
+the scope of experiment/documentation maintenance.
 
 ## Configuration and command dispatch
 
@@ -114,9 +145,9 @@ duplicates or wrong counts.
 **Cluster/network-only source selection:**
 
 ```bash
-python run_experiment.py --config configs/paper.json --dataset xsum \
+python run_experiment.py --config "$PWD/configs/paper.json" --dataset xsum \
   --model Qwen/Qwen2.5-32B --stage select-sources \
-  --workspace /work/hdd/<project>/llm-detection
+  --workspace "/work/hdd/bhuc/$USER/llm-detection-new-experiment"
 ```
 
 The target model argument is required by the common CLI but does not influence
@@ -128,7 +159,7 @@ The prepare path in [`prepare_run_data`](../experiment_core/preparation/pipeline
 restartable products:
 
 1. `generate_base_examples` tokenizes the model-independent source, uses the
-   first 30 target tokens as the prompt, takes the next source tokens as the
+   configured prompt prefix (30 tokens in the paper baseline), takes the next source tokens as the
    human continuation, and generates the LLM continuation. The realized human
    and LLM sides are length matched. `TransformersBackend` groups requests by
    assigned seed and length bucket; `VLLMBackend` is an optional generation-only
@@ -184,17 +215,28 @@ rank, `mean(NLL)/(mean(log_rank)+epsilon)`, mean entropy, and mean
 
 Each `target-token-features-v2` row also stores the configured top-k token IDs
 and log probabilities, top-1/top-2 log-probability margin, and observed-target
-minus top-1 margin. Paper runs use `saved_top_k: 10`. Optional
-`document_features.mean_pooled_final_hidden_state` is off in paper/smoke and on
-only in the dedicated Delta smoke to exercise the schema. Existing target
+minus top-1 margin. The paper baseline and accepted source manifests record
+`saved_top_k: 10`. The optional
+`document_features.mean_pooled_final_hidden_state` flag defaults to false in
+`configs/paper.json` and `configs/smoke.json`, and true in the dedicated Delta
+smoke. The accepted Granite source manifests also record it as true; the other
+six final primary cells record false. These saved vectors are not consumed by
+the seven reported detector formulas or the compact evaluator. Report this as
+a source-specific feature-storage choice, not a universal paper-run default. Existing target
 score rows are rejected on resume if their schema, resolved model/tokenizer
 revision, top-k width, or pooled-hidden setting differs.
 
-If Binoculars is enabled, target-model objects are released first and
-[`BinocularsScorer`](../experiment_core/detectors/scoring.py) loads:
+In the general primary score stage, if Binoculars is enabled, target-model
+objects are released first and [`BinocularsScorer`](../experiment_core/detectors/scoring.py)
+uses the configured Falcon pair. `configs/paper.json` defaults to:
 
 - performer `tiiuae/falcon-7b-instruct` on `cuda:0`;
 - observer `tiiuae/falcon-7b` on `cuda:1`.
+
+Those device numbers describe this primary baseline, not all historical
+allocations or the separate RAID scorer; RAID's config assigns observer to
+`cuda:0` and performer to `cuda:1`. Model roles determine the cross-entropy
+direction; a GPU index is placement metadata, not a detector definition.
 
 It verifies tokenizer compatibility, transfers observer logits to the performer
 device, computes exact `H(observer, performer)` in vocabulary chunks, and saves
@@ -215,11 +257,15 @@ the token arrays used by evaluation.
 The ordering is deliberately leakage-safe for each configured detector:
 
 1. `_clean` extracts tuning human and clean LLM rows.
-2. `orientation` fixes score direction from those tuning rows.
+2. `orientation` learns score direction from those tuning rows for the general
+   detectors. With the revision enabled, LRR is fixed to `+1`; Binocular-origin
+   is always fixed to `-1` (smaller un-oriented ratio is more machine-like).
 3. `tune_clipping_spec` searches the configured quantiles using only the
    configured tuning mixture. Generic detectors floor oriented local
    contributions at a lower bound; LRR separately caps NLL and log-rank before
-   recomputing the ratio.
+   recomputing the ratio. Revised origin caps numerator NLL only. Revised
+   candidate guards reject nonempty constant-score candidates and invalid LRR
+   zero-denominator caps; the no-clipping candidate remains available.
 4. Only after selection is complete,
    [`precompute_evaluation_scores`](../experiment_core/analysis/evaluation.py) traverses every
    row once and creates contiguous `float64` raw and clipped arrays plus
@@ -234,8 +280,9 @@ evaluation_precompute_timing={"analysis":"primary_frozen_mixture",...}
 ```
 
 It includes detector, elapsed seconds, row count, and raw/clipped score counts.
-Timing is instrumentation only; it is not stored in `metrics.csv`, and no
-speedup has been measured or claimed.
+Timing is instrumentation only; it is not stored in `metrics.csv`. No controlled
+before/after speedup benchmark was established by this documentation audit;
+ordinary elapsed-job logs alone cannot establish an optimization speedup.
 
 Thresholds are conservative upper order statistics from calibration-human
 scores. Final metrics use test humans and the requested clean/attacked LLM rows.
@@ -252,6 +299,12 @@ arrays. `_selected_source_indices` groups the requested row indices by
 `random.Random`. Every row belonging to a sampled source is concatenated,
 preserving random-draw clustering. Raw and clipped metrics use the same sampled
 IDs. Percentile intervals use the 2.5% and 97.5% quantiles.
+
+The selected bounds and calibration thresholds are **held fixed** inside these
+test-source bootstraps. The intervals quantify test-source sampling uncertainty
+conditional on the fitted procedure, not uncertainty from retuning or
+recalibrating the entire experiment. Report actual held-out FPR alongside the
+nominal calibration target; a target of 5% does not force test FPR to equal 5%.
 
 Condition-specific seeds equal the configured bootstrap base seed plus a stable
 hash of detector/condition fields. The CSV records the base seed; the derivation
@@ -277,8 +330,11 @@ The 392 metrics rows are
 Ratio-zero prepared text is stored once but evaluated as the common clean
 baseline on both random and tail curves.
 
-Main stage commands (**cluster/network/GPU-only unless every dependency and
-artifact is already local**):
+The following illustrate the **general base pipeline**, not the accepted
+detector-revision replay. They can create/update artifacts and are not a
+recommended next step for completed cells. Use an approved new run ID and
+verify storage before generation/scoring. Source selection may require network;
+evaluation can reuse saved features without inference:
 
 ```bash
 python run_experiment.py --config configs/paper.json --dataset xsum \
@@ -292,7 +348,7 @@ python run_experiment.py --config configs/paper.json --dataset xsum \
 Validate counts without loading whole JSONL files into shell variables:
 
 ```bash
-wc -l runs/source_manifests/<manifest>.jsonl \
+wc -l "runs/source_manifests/<manifest>.jsonl" \
   runs/paper-xsum-qwen32/base_generations.jsonl \
   runs/paper-xsum-qwen32/tail_candidate_cache.jsonl \
   runs/paper-xsum-qwen32/data.jsonl \
@@ -309,10 +365,10 @@ the CSV is created.
 ## Paired Granite-XSum splice-artifact audit
 
 [`archive/studies/splice_audit/run_splice_artifact_audit.py`](../archive/studies/splice_audit/run_splice_artifact_audit.py) is a bounded,
-isolated follow-up to the primary 21-cell study. It reuses the completed
+isolated historical follow-up to the broader proposed model matrix. It reuses the completed
 Granite-XSum cell named in
 [`archive/studies/splice_audit/splice_artifact_audit_granite_xsum.json`](../archive/studies/splice_audit/splice_artifact_audit_granite_xsum.json)
-and does not modify that cell. The default protocol deterministically selects
+and is designed not to modify that cell. The archived default protocol selects
 500 test sources, generates one seed-404 alternative Granite continuation for
 each source, and constructs one common clean row plus four paired conditions at
 10/30/50 percent contamination. Thus the default audit writes 500 alternative
@@ -328,13 +384,21 @@ and 1/5-percent-FPR thresholds; it never tunes them on audit rows. Outputs live
 under `runs/splice_artifact_audits/<audit-id>` and
 `results/splice_artifact_audits/<audit-id>`.
 
-Run the all-detector gate first. These commands are for Delta after the user's
+This archived diagnostic is not part of the final nine-cell + RAID result.
+The following commands are historical reference, not a next action or a
+requirement for report writing. They require an independently preserved local
+archive; a fresh clone does not contain the ignored scripts.
+The following expected counts describe the archived protocol, not evidence
+that its Delta gate or full study passed. Verify historical sources and script
+compatibility separately before executing them.
+For a deliberately resumed diagnostic, run the all-detector gate first. These commands are for Delta after the user's
 Git pull and after verifying that both `runs` and `results` resolve below
 `/work/hdd`:
 
 ```bash
 cd ~/LLM-detection
-source /projects/bhuc/$USER/venvs/delta-smoke/bin/activate
+source tools/delta/activate_environment.sh
+mkdir -p logs
 
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 AUDIT_ID="granite-splice-smoke-$STAMP"
@@ -405,7 +469,9 @@ run. Use a new audit ID if the frozen protocol changes.
 ## Beemo expert-edit benchmark
 
 [`archive/studies/beemo/run_beemo.py`](../archive/studies/beemo/run_beemo.py) is the authoritative entry point for
-the separate realistic-edit study. It orchestrates five stages:
+the separate archived realistic-edit study, not an active final-report
+dependency. The description below gives its designed contract; inspect its own
+historical manifests before claiming those counts or completion. It orchestrates five stages:
 
 1. download and normalize all nine Beemo variants per record;
 2. score output text with GPT2-XL, OPT-1.3B, Falcon-7B, Qwen2-7B, and, by
@@ -448,8 +514,11 @@ skip complete provenance keys. CSV and JSON markers use temporary-file atomic
 replacement.
 
 Resume is key-safe, not a universal configuration cache. Base/tail/data keys do
-not encode all generation or algorithm settings, and general runs do not save a
-full config snapshot. Also, the Transformers backend keeps per-seed RNG state
+not encode all generation or algorithm settings. General manifests record the
+generation, contamination, scoring and evaluation groups, among other
+provenance, but the base runner does not compare the complete resolved
+configuration on resume. Dedicated revision identities provide stricter
+configuration/content checks. Also, the Transformers backend keeps per-seed RNG state
 only in memory; after an interrupted process, completed generations remain
 unchanged but the remaining examples restart that seed's RNG stream and need
 not match an uninterrupted reference run. The dedicated Delta smoke compares a
@@ -495,12 +564,16 @@ python archive/exporters/export_completed_plots.py
 ```
 
 By default the export and archive are written below
-`results/plot_exports/`, which resolves to `/work/hdd` in the Delta checkout.
+`results/plot_exports/`. It resolves under `/work/hdd` only if that checkout's
+`results` link is correctly configured; verify it rather than assuming it.
 
 ## Delta setup, storage, and Slurm
 
-The active Delta instructions are [`docs/delta/DELTA.md`](delta/DELTA.md), with the mandatory
-bounded gate in [`docs/delta/DELTA_SMOKE.md`](delta/DELTA_SMOKE.md).
+The active Delta instructions are [`docs/delta/DELTA.md`](delta/DELTA.md).
+Use [REPOSITORY_SMOKE.md](delta/REPOSITORY_SMOKE.md) for no-download layout/environment
+verification, [DELTA_SMOKE.md](delta/DELTA_SMOKE.md) for the bounded real Qwen-0.5B
+pipeline, and the detector-revision guide for the separate real Falcon gate.
+None needs repeating merely to read or plot completed validated results.
 
 Recommended filesystem responsibilities are:
 
@@ -510,17 +583,26 @@ Recommended filesystem responsibilities are:
 | `/projects/<project>` | virtual environments and deliberately retained/shared caches |
 | `/work/hdd/<project>/<user>` | high-volume run JSONL, feature packs, results, and temporary experiment workspace |
 
-Relative config paths resolve below `--workspace`. The current Slurm scripts do
-not pass `--workspace`; they run with `$PWD` as the repository/workspace and
-default Hugging Face cache below `$PWD/.cache`. Therefore a full-scale launch
-must either run a worktree located on `/work/hdd`, invoke Python directly with
-an explicit `/work/hdd` workspace and absolute config path, or use a reviewed
-site-specific wrapper. Merely reading this guide does not relocate existing
-paths.
+In `run_experiment.py`, both relative output paths and the relative `--config`
+filename resolve below `--workspace`; use an absolute config filename when the
+workspace differs from the checkout. Revision runners instead reconstruct their
+settings from the preserved source manifest. The general
+`delta_experiment.sbatch` defaults to `$PWD/.venv` and `$PWD/.cache/huggingface`
+unless `VENV_PATH`/`HF_HOME` are exported. It does not enforce storage placement.
+For this installation set those variables to the existing project environment
+and shared work cache, and verify `runs`/`results` links into `/work/hdd` before
+launch. The revision launcher already uses the shared cache and environment,
+offline mode, and explicitly checks the links. Do not generalize the older
+launcher's defaults to all current wrappers.
 
-**Cluster-only environment setup** creates the requested venv, loads
+**New installation only:** cluster environment setup creates the requested venv, loads
 `miniforge3-python`, installs PyTorch 2.11.0 from the CUDA 12.8 wheel index, then
 installs [`requirements.txt`](../requirements.txt):
+
+The existing installation must instead be activated with
+`source tools/delta/activate_environment.sh`; its display name is
+`llm-detection`, while its physical path remains `.../venvs/delta-smoke`.
+Do not reinstall packages as a routine result-inspection step.
 
 ```bash
 VENV_PATH="/projects/<project>/$USER/venvs/llm-detection" \
@@ -571,11 +653,12 @@ Use a new run ID and add focused tests for every extension.
   provenance in `data.py`/`pipeline.py`; extend expected-row math, modes in
   evaluation and plotting, tuning-mixture validation, row keys, and clustered
   tests. Do not silently reuse old rows with matching keys.
-- **New external benchmark:** add a loader and scorer compatible with the
-  released feature schema, then implement an evaluation entry point that reads
-  saved direction, clipping specification, and raw/clipped thresholds from the
-  originating internal cell. It must not call orientation, clipping tuning, or
-  calibration on external rows.
+- **New external benchmark:** predeclare whether it is a frozen-transfer test
+  or a benchmark with its own tuning/calibration/test split. A frozen-transfer
+  test must not retune on external rows. RAID is the latter: it has its own
+  source-disjoint tuning and domain-wise human calibration, not thresholds
+  transferred from the nine primary cells. Neither design permits test-set
+  tuning.
 
 ## Tests by subsystem
 
@@ -593,6 +676,9 @@ python -m unittest discover -s tests -v
 | [`tests/test_io.py`](../tests/test_io.py) | torn-final-line repair, duplicate rejection, durable append checkpoints, completion markers |
 | [`tests/test_delta_and_manifest.py`](../tests/test_delta_and_manifest.py) | Delta partitions/matrix and required manifest provenance |
 | [`tests/test_delta_smoke.py`](../tests/test_delta_smoke.py) | exact bounded config, static Slurm guards, no-network two-pass synthetic smoke and validator |
+| `tests/test_raid_data.py`, `tests/test_raid_scoring.py`, `tests/test_raid_evaluation.py`, `tests/test_raid_pipeline.py`, `tests/test_raid_delta.py` | RAID selection/indexing, feature references, fitted procedures, source-cluster evaluation and sharded orchestration |
+| `tests/test_detector_revision.py` | revised detector arithmetic, gate/score/evaluate recovery, constant and zero-cap safeguards, conditional primary and official RAID distinctions |
+| `tests/test_final_publication_export.py` | source artifact validation, filtered seven-detector export, plots and bundle integrity |
 
 Torch-specific unit paths skip when Torch is unavailable. The synthetic smoke
 validates contracts and deterministic resume keys, not actual dataset/model
@@ -600,12 +686,14 @@ downloads or GPU behavior.
 
 ## Current limitations and planned optimizations
 
-- Real dataset access, resolved revisions, CUDA exact-feature parity, Falcon
-  two-GPU placement, vLLM, 24B-72B sharding, Slurm behavior, throughput, and
-  peak memory still need Delta validation.
+- The final nine-cell + RAID bundle provides artifact-level evidence for those
+  completed runs. The user-reported repository smoke `21883773` passed all 105
+  active tests without skips on Delta. Neither establishes untested vLLM,
+  72B/H200, arbitrary future models, or equivalence under changed dependencies.
 - Configured revisions are `null` until runtime resolution; pin released runs
   explicitly for immutable replication.
-- General resume does not snapshot/compare the full configuration, and
+- General resume records configuration groups but does not compare the full
+  configuration before reusing prepared artifacts, and
   stochastic RNG state is not persisted across interrupted generation.
 - The evaluator holds compact token-feature rows in memory. Scalar
   precomputation removes repeated aggregation inside bootstrap but does not make
@@ -613,11 +701,13 @@ downloads or GPU behavior.
 - Bootstrap repetitions and detector analyses are intentionally serial; planned
   optimization may vectorize bootstrap metrics or parallelize detectors only
   after numerical equivalence is preserved.
-- Precompute timing is logged, but no before/after benchmark or speedup claim
-  exists.
+- Precompute timing is logged; this audit did not establish a controlled
+  before/after speedup benchmark. Do not turn elapsed-job anecdotes into one.
 - The matrix wrapper enforces Qwen-32B reuse only within one invocation; it has
   no cross-run registry.
-- `/work/hdd` placement is documented but not enforced by config validation or
-  the Slurm wrapper.
-- No frozen-threshold external-benchmark evaluator exists yet.
+- `/work/hdd` placement is not enforced by the general config validator or
+  primary full-generation wrapper; corrected revision and RAID wrappers have
+  explicit checks. Validate actual links before each large launch.
+- The current RAID evaluator is internally split, not a frozen-transfer
+  evaluator. Do not describe its results as zero-tuning external transfer.
 - Historical source is retained under `archive/`; generated Python caches are ignored.

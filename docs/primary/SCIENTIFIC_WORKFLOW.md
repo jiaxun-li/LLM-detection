@@ -1,419 +1,296 @@
-# Scientific workflow
+# Primary scientific workflow: released nine-cell study
 
-Repository organization: the current released analysis is the corrected nine
-primary cells plus RAID. Beemo and the paired splice diagnostic are preserved
-under `archive/studies/`. The broader matrix below is retained as historical
-design context; archiving code does not change any frozen scientific settings.
-See [docs/REPOSITORY_MAP.md](../REPOSITORY_MAP.md) for the current file map.
+Audited against active code and downloaded final revision/configuration records
+on 2026-09-08. This document describes the released analysis, not an instruction
+to overwrite it. See [the codebase guide](../CODEBASE_GUIDE.md),
+[detector revisions](../DETECTOR_REVISION.md) and
+[RAID's separate scientific design](../raid/SCIENTIFIC_DESIGN.md).
 
-Detector amendment: see [docs/DETECTOR_REVISION.md](../DETECTOR_REVISION.md) for the
-versioned seven-method primary reanalysis (published-ratio Binoculars replaces
-the reported gap diagnostic, LRR direction is fixed, and degenerate clipping
-candidates are rejected). The eight-detector compatibility path and historical
-protocol below remain archived.
+## 1. Scope and evidence hierarchy
 
-This is the canonical scientific protocol for the repository. The frozen
-full-scale specification is [`configs/paper.json`](../../configs/paper.json); the
-smoke configurations are engineering checks and are not substitutes for the
-paper experiment. Implementation details and commands live in
-[`docs/CODEBASE_GUIDE.md`](../CODEBASE_GUIDE.md).
+The released primary study crosses XSum, SQuAD and WritingPrompts with
+`ibm-granite/granite-3.3-8b-base`,
+`mistralai/Mistral-Small-24B-Base-2501` and `Qwen/Qwen2.5-32B`:
+**nine primary cells**. Erebus 20B and Qwen 7B/14B/72B remain in the configuration
+as historical replication/scaling plans. Their additional twelve cells are not
+in the final bundle and must not be described as completed evidence. Qwen 32 is
+shared between primary and proposed scaling analyses, not an independent repeat.
 
-## Research question and hypotheses
+RAID is the separate realistic-attack benchmark. Beemo and splice-artifact
+studies are historical material under local-only `archive/`, not primary results.
 
-The study asks whether document-level LLM detectors remain useful when a
-generated continuation contains increasing amounts of human text, and whether
-one-sided clipping of adverse token contributions improves robustness relative
-to the detector's ordinary, raw token aggregation.
+For a reported number, use this authority order: final bundle metrics and its
+transformation provenance; selected source/revision manifests and frozen specs;
+the corresponding versioned code; then current defaults and narrative docs.
+`configs/paper.json` is **not the exact saved configuration of every cell**.
+The base `run_experiment.py` retains historical evaluation. Final corrected
+analysis uses
+[`tools/reanalysis/reevaluate_detector_revision.py`](../../tools/reanalysis/reevaluate_detector_revision.py).
+Running the base pipeline alone does not recreate corrected publication tables.
 
-The preregistered directional hypotheses are:
+## 2. Research question and interpretation
 
-1. Human-token contamination reduces detector TPR as its ratio increases, with
-   white-box tail contamination at least as challenging as random
-   contamination.
-2. A clipping rule selected without calibration or test data improves the
-   contamination-robustness curve and/or TPR at calibrated FPR, while preserving
-   useful clean-text discrimination.
-3. The result is not confined to one dataset or model family; it should appear
-   in the primary matrix, remain interpretable in the Erebus replication, and
-   show a coherent pattern across Qwen model scale.
+The study tests document-detector robustness to controlled token-splice
+contamination, comparing raw and clipped aggregation on identical texts.
+Contaminated machine continuations remain machine-positive; clean human
+continuations are negative. Replacement material comes from human text, but
+the resulting token splices are **not certified grammatical human edits**.
+They can disrupt syntax, token boundaries and conditional context. Gains may
+reflect robustness to these disruptions, not specifically human authorship.
 
-Raw aggregation is the scientific control because it is the detector's ordinary
-document score. Clipped aggregation is the intervention: after the detector's
-orientation is fixed, it limits only unusually adverse token contributions (or
-the corresponding NLL/log-rank components for LRR). Comparing the two on the
-same documents, calibration data and threshold procedure, and bootstrap source
-samples isolates the aggregation change rather than a change in generated text.
+A realized replacement budget is not the theoretical conditional mixture
+probability in a contamination theorem: conditional distributions downstream of
+an edit can change beyond directly replaced positions. Decreasing detection
+with contamination and improvement under clipping are hypotheses, not enforced
+properties. Null/adverse results remain results.
 
-## Study matrix: exactly 21 unique cells
+Do not describe the entire amended analysis as preregistered without a dated
+registration covering the actual version. Earlier results and pilots were
+inspected before subsequent amendments. Separation of fitting/calibration/test
+rows prevents direct test-row fitting but does not erase study-level adaptivity.
 
-Every target model is crossed with XSum, SQuAD, and WritingPrompts. There are
-seven unique target models and therefore **7 models x 3 datasets = 21 unique
-dataset-model cells**.
+## 3. Sources and splits
 
-| Role | Target model | Cells |
-|---|---|---:|
-| Primary | `ibm-granite/granite-3.3-8b-base` | 3 |
-| Primary | `mistralai/Mistral-Small-24B-Base-2501` | 3 |
-| Primary and Qwen scaling | `Qwen/Qwen2.5-32B` | 3 |
-| Replication | `KoboldAI/GPT-NeoX-20B-Erebus` | 3 |
-| Qwen scaling | `Qwen/Qwen2.5-7B` | 3 |
-| Qwen scaling | `Qwen/Qwen2.5-14B` | 3 |
-| Qwen scaling | `Qwen/Qwen2.5-72B` | 3 |
+| Dataset | Dataset ID / split | Source field |
+|---|---|---|
+| XSum | `EdinburghNLP/xsum`, validation | `document` |
+| SQuAD | `rajpurkar/squad`, train | Deduplicated `context`; short unique contexts packed without reuse |
+| WritingPrompts | `euclaise/writingprompts`, validation | First present of `story`, `text`, `completion` |
 
-The primary analysis is the nine cells from Granite 8B, Mistral 24B, and Qwen
-32B. The replication is the three Erebus 20B cells. The Qwen scaling analysis
-contains 7B, 14B, 32B, and 72B across all three datasets, but the Qwen 32B cells
-are the same three cells already produced for the primary analysis. They must
-be reused, not generated, scored, or counted a second time.
+`select_source_manifest` in
+[`pipeline.py`](../../experiment_core/preparation/pipeline.py) normalizes,
+deduplicates, applies a 260-word filter (packing where enabled), and deterministically
+hash-selects sources. Its manifest signature is independent of target model.
+Before a new paired cross-model analysis, verify exact source overlap from saved
+source manifests rather than assuming it from current code alone.
 
-The current matrix wrapper deduplicates model IDs within
-`EXPERIMENT_SET=all`. By contrast, running `primary` and then
-`qwen-scaling` as separate wrapper invocations would submit Qwen 32B twice.
-Operators must use one deduplicated matrix or explicitly omit the already
-completed Qwen 32B cells from later scaling work.
+Each cell uses 3,000 selected sources: 500 `clipping_tuning`, 500 `calibration`,
+2,000 `test`, with selection seed 1731. Generation seeds 101/202/303 divide the
+sources round-robin, not multiply their count. A packed SQuAD source can contain
+multiple original contexts; 3,000 sources does not mean 3,000 original QA pairs.
+All variants and random draws for a source are dependent observations.
 
-## Datasets and shared source manifests
+## 4. Generation, scoring context and saved overrides
 
-The paper configuration uses:
+All nine saved revision configurations specify Transformers generation, nominal
+30-token source prefix, target/max 220 new tokens, minimum 210, temperature 0.8,
+top-p 0.95, batch 8, checkpoint 96, length bucket 32 and BF16. Actual continuation
+length can differ from 220. Human and machine continuations are length-matched
+before corruption. No chat template is introduced.
 
-| Short name | Hugging Face dataset | Split | Source field behavior |
-|---|---|---|---|
-| `xsum` | `EdinburghNLP/xsum` | `validation` | `document` |
-| `squad` | `rajpurkar/squad` | `train` | deduplicated `context`; short unique contexts are packed without reuse |
-| `writingprompts` | `euclaise/writingprompts` | `validation` | first available of `story`, `text`, or `completion` |
+`prepare_scoring_tokens` in
+[`scoring.py`](../../experiment_core/detectors/scoring.py) separately encodes
+prompt and response with no added special tokens and concatenates their IDs.
+Only response predictions contribute; prompt tokens provide context. If combined
+length exceeds 512 tokens, the response is right-truncated to the space left
+after the prompt. The saved Falcon pair uses this same policy. 220 target-model
+tokens need not be 220 Falcon tokens; generated length and scored length differ.
 
-Source selection is target-model independent. For each dataset,
-[`select_source_manifest`](../../experiment_core/preparation/pipeline.py) streams the dataset,
-normalizes and deduplicates text, retains a deterministic hash-selected subset,
-and writes one shared manifest under `runs/source_manifests/`. The manifest
-signature depends on the dataset specification, split counts, and generation
-seed list, but not on the target model. All target models therefore receive the
-same `source_id`, `sample_id`, and split assignments.
+The saved manifests establish these differences from current defaults:
 
-Each dataset has exactly 3,000 unique source IDs:
+| Cells | Generation/scoring device map | Recorded generation TP | Pooled hidden state saved | Base round-trip guard | Explicit constructed guard |
+|---|---|---:|---|---:|---:|
+| Granite, all 3 | `auto` | 2 | true | 8 | absent |
+| Mistral, all 3 | `auto` | 4 | false | 12 | absent |
+| Qwen 32 XSum/SQuAD | `auto` | 4 | false | 12 | absent |
+| Qwen 32 WritingPrompts | `auto` | 4 | false | 12 | 20 |
 
-- 500 `clipping_tuning` IDs;
-- 500 `calibration` IDs;
-- 2,000 `test` IDs.
+Recorded `tensor_parallel_size` is not evidence of actual tensor-parallel
+execution under the Transformers/device-map backend. Scoring batch/microbatch
+are 4, saved top-k 10, vocabulary chunk 8192. Hidden states are auxiliary outputs,
+not inputs to the seven detectors.
 
-The selection seed is 1731. The three sets are disjoint. Generation seeds 101,
-202, and 303 are assigned round-robin across the selected examples, so the
-seeds **divide the 3,000 examples**. They do not create three generations per
-source and do not multiply the sample count.
+Current preparation records decode/re-tokenize drift, can canonically normalize
+and length-match base continuations outside their guard, and falls back to the
+base guard when no separate constructed guard exists. Do not retroactively
+describe all historical cells with current 12/20 defaults. Historical per-row
+normalization and empirical length distributions require original prepared/base
+rows on Delta; large JSONL files are absent from the downloaded final bundle.
 
-## Generation and contamination
+## 5. Contamination construction and counts
 
-For every source, the target model receives a 30-token prompt and generates an
-approximately 220-token continuation. The frozen generation settings are:
+Ratios are 0/5/10/20/30/40/50%. For original length \(n\) and positive ratio
+\(r\), token budget is \(\min(n,\max(1,\operatorname{round}(nr)))\), using
+Python rounding. Replacement preserves the token-array length before decoding.
+Recorded realized ratio uses donor count/final re-tokenized length, not edit
+distance and not necessarily the fraction of distinct token IDs that changed.
+See [`data.py`](../../experiment_core/preparation/data.py) and `pipeline.py`.
 
-- target continuation length 220 tokens;
-- `max_new_tokens: 220` and `min_new_tokens: 210`;
-- temperature 0.8;
-- top-p 0.95;
-- Transformers by default, with vLLM as an optional generation backend.
+- **Random:** sentence-like human spans are shuffled, truncated to fill the
+  budget, and placed in non-overlapping random recipient token windows. Three
+  draws per positive ratio/source; windows can cut recipient sentences.
+- **Tail:** candidate human spans are scored once for mean target-model NLL
+  conditional on the prompt, ordered highest first with candidate-ID tie breaking,
+  cached across ratios, then used to replace a suffix. This is a white-box
+  high-NLL donor/suffix attack, not optimization against all seven detectors
+  or proof of a worst-case attack.
 
-The prompt text is decoded from the first 30 source token IDs. Because some
-tokenizers do not make arbitrary token slices textually idempotent, the model's
-actual re-encoded prompt can differ slightly in length. The requested count,
-actual input IDs/count, and signed prompt drift are stored. Drift within the
-twelve-token base integrity guard is accepted; larger drift remains an error.
+Spans use a regex punctuation/whitespace/newline splitter, not a linguistic
+sentence parser. Corruption base seed 99173 is combined with dataset, target,
+sample ID and draw ID; ratio is not part of that seed. Ratios/draws are not
+independent experimental replications.
 
-The human continuation is taken from the same target-independent source after
-the prompt and is truncated to the realized LLM continuation length. Human
-contamination replaces target-tokenizer tokens one for one before decoding.
-The stored row records requested and realized contamination ratios, original,
-human, replaced, and final token counts, and decode/re-tokenize length drift.
-The paper uses explicit round-trip integrity guards rather than assuming exact
-textual idempotence. If an uncontaminated human/LLM continuation exceeds the
-twelve-token base guard, its visible text is canonically re-tokenized and the pair is
-length-matched before any contamination is constructed; the initial counts,
-signed drift, and normalization flag remain recorded. Constructed rows must
-finish within a separate twenty-token guard and record final count, signed
-length delta, and realized contamination ratio. The original twelve-token
-construction bound was amended before Qwen-32B WritingPrompts scoring after an exhaustive
-audit of all 72,000 positive-ratio constructions in that cell. Only 34 rows
-(0.0472%) from 20 sources exceeded twelve tokens; the maximum absolute drift
-was 19 tokens, concentrated in 40%-50% tail contamination. The amended bound
-of twenty admits every audited construction while continuing to fail any
-larger, unexplained drift. No detector scores existed for the amended cell when
-the bound was selected, so this operational amendment did not use detector
-outcomes. The prompt and uncontaminated-continuation guard remains twelve
-tokens.
+Each source has two clean rows (human/machine) plus six positive ratios times
+four constructions (three random, one tail): 26 rows/source, 78,000 rows/cell.
+Target and Falcon score packs must cover those same provenance keys. A test
+random condition has 6,000 positive rows from 2,000 sources; a tail condition has
+2,000. Clean machine TPR appears in both mode panels for display, without
+duplicating the original clean sample.
 
-The fixed experimental ratios are 0%, 5%, 10%, 20%, 30%, 40%, and 50%. They
-are experimental conditions, not hyperparameters: no ratio is selected,
-dropped, or weighted in response to calibration or test performance.
+## 6. Final detector definitions
 
-Two attacks are constructed:
+Let \(\ell_i=\log p(x_i\mid\mathrm{prefix})\), \(a_i=-\ell_i\),
+\(r_i=1+\#\{v:\mathrm{logit}(v)>\mathrm{logit}(x_i)\}\), and
+\(h_i=-\sum_v p_i(v)\log p_i(v)\). Logs are natural, rank ties are competition
+ties, and bars denote response-token arithmetic means.
 
-- **Random contamination** chooses human spans and non-overlapping replacement
-  windows using a deterministic corruption seed. There are three draws per
-  positive ratio and source. Multiple draws measure sensitivity to the random
-  placement rather than letting a single favorable or unfavorable placement
-  determine the result.
-- **White-box tail contamination** splits the human continuation into candidate
-  spans, scores every span once by target-model NLL conditional on the prompt,
-  freezes the highest-NLL ordering in `tail_candidate_cache.jsonl`, and consumes
-  that ordering into an approximately length-matched suffix replacement. The
-  cache is reused across all ratios for that source.
+| Final detector ID | Raw score | Final direction |
+|---|---|---|
+| `log_likelihood` | \(\bar\ell\) | Learned from clean tuning means |
+| `rank` | \(\bar r\) | Learned |
+| `log_rank` | \(\overline{\log r}\) | Learned |
+| `lrr` | \(\bar a/(\overline{\log r}+10^{-12})\) | Fixed+1: larger = machine-like |
+| `entropy` | \(\bar h\) | Learned |
+| `entropy_gap` | \(\overline{a-h}\) | Learned |
+| `binocular_origin` | Performer mean NLL / observer-to-performer mean cross-entropy | Fixed-1: smaller = machine-like |
 
-Ratio zero is represented only by one clean human row and one clean LLM row. It
-is not duplicated for attack mode or random draw. For each source:
+For learned direction, choose+1 when the machine clean tuning mean is at least
+the human mean, otherwise-1. It is not selected using test AUROC. LRR means
+DetectLLM likelihood/log-rank ratio, **not a likelihood ratio between two
+probability models**. Entropy gap is unnormalized NLL minus entropy; do not
+label it variance-normalized Fast-DetectGPT. Literature names must refer to the
+exact implemented statistic.
 
-```text
-2 clean rows + 6 positive ratios x (3 random draws + 1 tail draw)
-= 2 + 6 x 4
-= 26 rows/source
-```
+Falcon performer is `tiiuae/falcon-7b-instruct`, observer `tiiuae/falcon-7b`.
+Observer probabilities weight performer log probabilities in the cross-entropy.
+Primary origin components share the saved prompt-conditioned response window:
+label it **conditional Binoculars-ratio adaptation**, not exact output-only
+upstream reproduction. RAID's official-window/BF16-anchored path is separate.
+The old exponential mean-gap score (`binoculars`, renamed `binocular_gap`)
+remains for compatibility but is excluded from final publication views.
 
-Thus every full-scale cell has:
+## 7. Clipping, candidate selection and degeneracy guards
 
-```text
-3,000 sources x 26 rows/source = 78,000 prepared rows
-```
+Implementation: `_candidate_specs`, `tune_clipping_spec`, `orientation`,
+`evaluate` in [`evaluation.py`](../../experiment_core/analysis/evaluation.py),
+and guards in [`detector_revision.py`](../../experiment_core/detectors/detector_revision.py).
 
-Both the target-model score file and, when enabled, the Binoculars score file
-must also contain 78,000 matching provenance keys.
+Generic oriented token evidence \(z_i=d s_i\) is replaced by
+\(\max(z_i,L)\) and averaged. LRR caps both components:
 
-## Seven detectors
+$$
+S_{\mathrm{LRR,clip}}=
+\frac{\overline{\min(a_i,U_a)}}{\overline{\min(\log r_i,U_r)}+10^{-12}}.
+$$
 
-All seven configured detectors produce one document score, but their token
-evidence differs:
+Primary origin caps only numerator NLL; its cross-entropy denominator is
+unchanged. This is an experimental extension, not the published raw detector.
 
-| Detector | Concept and implemented raw aggregation |
+Candidate quantiles pool **clean human and clean machine tuning tokens**;
+documents with more tokens contribute more to these quantiles. Grid:
+0.80/0.85/0.90/0.95/0.975/0.99/0.995 plus no clipping. Generic bounds are lower
+\(1-q\) quantiles of oriented evidence; origin bounds are upper NLL quantiles.
+LRR uses the seven-by-seven Cartesian grid: 49 cap pairs plus raw before
+rejection/duplicate values.
+
+The attacked tuning mixture pools random and tail rows at 10/20/30/40/50%,
+excluding 5%. With three random draws versus one tail draw it has **3: 1
+random:tail row weighting**, not equal-weight attack-average AUROC. Objective:
+
+$$
+J=0.8\,\mathrm{AUROC}(H_{\rm tune},M_{\rm attacked,tune})
+ +0.2\,\mathrm{AUROC}(H_{\rm tune},M_{\rm clean,tune}).
+$$
+
+The clean term is a soft reward, not a hard zero-clean-loss constraint. RAID
+pilot selectors and clean-loss budgets must not be imported into this primary
+description. No-clipping is considered first; improvement must exceed
+\(10^{-15}\), leaving the earlier candidate on ties. One frozen specification
+serves every mode, ratio and FPR for a dataset/model/detector. Optional
+mode-specific oracle is disabled.
+
+Revised evaluation rejects nonempty candidates with constant clean tuning
+document scores or exact structural full saturation; it adds no near-constant
+tolerance. A constant origin numerator alone is not sufficient for rejection
+if its denominator retains information. LRR requires a finite strictly positive
+log-rank cap: zero would erase rank evidence even when the score still varies.
+Rejections appear in `clipping_rejections.json`. Qwen 32-SQuAD V4.2 specifically
+corrects this denominator-collapse candidate using saved features, not new
+inference. This fix must not be described merely as flipping a plotted curve.
+
+## 8. Calibration, metrics and uncertainty
+
+After fixing direction/specification, calibrate raw and clipped thresholds
+separately using 500 clean human calibration documents at 1% and 5% target FPR.
+For sorted scores and \(m=\lfloor\alpha n\rfloor\), use the next representable
+number above zero-based order statistic \(n-m-1\); classify scores greater than
+or equal to threshold. At most \(m\) calibration observations exceed it.
+Held-out test FPR need not equal target FPR and must accompany TPR claims.
+
+Report TPR, actual FPR, AUROC, normalized partial AUROC over 0–5% FPR, paired
+clipped-minus-raw differences, and normalized TPR-versus-contamination robustness
+AUC. Partial AUROC is trapezoidal ROC area divided by 0.05, **not** the
+McClish/sklearn standardized partial-AUC convention. Robustness AUC is the
+trapezoidal contamination-curve area divided by its ratio range (0.5).
+
+Final intervals use 2,000 percentile bootstrap repetitions, 2.5th/97.5th
+percentiles, base seed 481516 and deterministic condition-specific seeds.
+`_metric_bootstrap` resamples `sample_id` clusters, taking all relevant
+human/machine rows and random draws with each sampled source. Raw/clipped
+differences share the resample. `_robustness_bootstrap` keeps each resampled
+source across ratios. Bounds and calibration thresholds remain fixed: these
+are test-source sampling intervals conditional on fitting/calibration, not
+uncertainty of the complete tuning procedure. Intervals are pointwise, not
+simultaneous or multiplicity-adjusted. Repeated clean/robustness values in tidy
+rows do not create additional independent observations.
+
+## 9. Final artifact lineage
+
+Local publication bundle:
+`downloads/current/primary-nine-plus-raid-final-20260908T150247Z/primary/`.
+`bundle_summary.json` records 9 cells, 3,528 metric rows, 7 methods and 99 plots
+(11/cell). Each cell contributes 392 metric records:
+\(7\times 2\times 7\times 2\times 2\), for detectors/modes/ratios/FPRs/aggregations.
+These are metric records, not prepared texts.
+
+| Cell | Prepared/scored source run |
 |---|---|
-| Log likelihood | Mean target-model token log probability; generated text is expected to look more probable under its generator. |
-| Rank | Mean one-based competition rank of the observed token, `1 + count(logit > target_logit)`. |
-| Log rank | Mean natural log of that exact token rank. |
-| DetectLLM LRR | Mean token NLL divided by mean log rank, with a small numerical epsilon. |
-| Entropy | Mean exact full-vocabulary predictive entropy. |
-| Entropy gap | Mean token NLL minus predictive entropy. |
-| Binoculars-origin | `mean performer NLL / mean H(observer, performer)`; this is the prompt-conditioned ratio adaptation used by the revised primary analysis. |
+| Granite XSum | `granite8b-xsum-full-20260730T063720Z` |
+| Granite SQuAD | `granite8b-squad-full-20260730T063720Z` |
+| Granite WritingPrompts | `granite8b-writingprompts-full-20260730T063720Z` |
+| Mistral XSum | `mistral24-xsum-full-20260803T172630Z` |
+| Mistral SQuAD | `mistral24-squad-full-20260803T172630Z` |
+| Mistral WritingPrompts | `mistral24-writingprompts-roundtripfix-20260804T133827Z` |
+| Qwen 32 XSum | `qwen32-xsum-full-v2-20260803T051524Z` |
+| Qwen 32 SQuAD | `qwen32-squad-promptfix-20260804T133827Z` |
+| Qwen 32 WritingPrompts | `qwen32-writingprompts-guard20-20260821T152530Z` |
 
-Binoculars has explicit, non-interchangeable roles:
+Eight cells use source ID plus `-revision-20260904T163234Z`. Qwen 32-SQuAD uses
+`qwen32-squad-promptfix-20260804T133827Z-lrr-v42-20260907T163410Z`.
+Copied original source reports may state 8 detectors/448 rows and include gap.
+They remain immutable provenance. The final export filters to 7/392; its bundle
+manifest/hashes establish that transformation. Do not apply an original source
+report's artifact hashes/counts to the transformed publication CSV.
 
-- **Performer:** `tiiuae/falcon-7b-instruct`, which supplies observed-token NLL
-  and the distribution in the cross-entropy log term.
-- **Observer:** `tiiuae/falcon-7b`, whose predictive distribution weights the
-  observer-to-performer cross-entropy.
+`primary_all_metrics.csv` is the tidy final table; clean, clipping-effect and
+robustness files are derived views. `primary_cells/` preserves cell material.
+Configurations/hashes are provenance, not substitutes for score packs/weights.
+Resolved model/tokenizer/dataset IDs should be recovered from original source
+and scoring manifests for strict replication; null config revision fields alone
+do not supply pinning. This local audit did not replay Delta inference.
 
-The configured devices are `cuda:0` for the performer and `cuda:1` for the
-observer. Local tests validate the roles and formula, but not the real
-two-GPU execution.
+## 10. Reporting and change boundaries
 
-The revised primary cells preserve their original prompt-conditioned response
-window. Binoculars-origin clips only numerator token NLL and leaves the
-cross-entropy denominator unchanged. The former exponential mean-gap detector
-is retained in the evaluator only for archived-result compatibility and is not
-part of new primary tables or figures.
+A TPR increase at a higher held-out FPR is not automatically a like-for-like
+improvement. Low/zero SQuAD performance is not grounds for a test-selected
+direction reversal. Present primary conditional origin and RAID official origin
+separately. RAID fits its own tuning/calibration splits; it is not frozen-threshold
+transfer from these cells. Avoid claiming gains for every detector or attack.
 
-## Leakage-safe analysis
-
-For each dataset-model-detector cell, analysis proceeds in this order:
-
-1. Use only clean human and clean LLM rows from `clipping_tuning` to determine
-   whether larger or smaller detector values indicate LLM text.
-2. Use only `clipping_tuning` rows to select one primary clipping specification.
-   The frozen paper tuning mixture contains random and tail rows at 10%, 20%,
-   30%, 40%, and 50%; 5% is evaluated but is not in this tuning mixture.
-3. Freeze that direction and clipping specification for both attack modes, all
-   ratios, calibration, and final testing. The optional mode-specific oracle is
-   disabled in the paper configuration and is not a primary result.
-4. Only after freezing the specification, precompute every row's raw and
-   clipped scalar score once for that detector and analysis.
-5. Derive separate raw and clipped thresholds at target FPR 1% and 5% using
-   only the 500 clean **human** calibration documents. Calibration LLM rows and
-   all test rows are excluded from threshold selection.
-6. Apply the frozen thresholds to the 2,000 final-test source IDs. Test outcomes
-   cannot change orientation, clipping, ratios, generation parameters, or
-   thresholds.
-
-These constraints prohibit tuning on final-test AUROC/TPR, choosing a favorable
-contamination draw, choosing ratios after looking at results, or recalibrating
-on attacked or external test data.
-
-## Metrics and paired source-cluster bootstrap
-
-For both raw and clipped aggregation, each detector, attack mode, ratio, and
-target FPR reports:
-
-- the calibration threshold and final-test actual FPR;
-- TPR at calibrated 1% and 5% target FPR;
-- AUROC;
-- normalized partial AUROC over 0%-5% FPR;
-- paired clipped-minus-raw differences for TPR, AUROC, and partial AUROC;
-- normalized AUC of TPR versus contamination ratio (robustness AUC);
-- calibration-human, test-human, test-LLM, corruption-draw, and unique-source
-  counts;
-- percentile 95% confidence intervals.
-
-The paper configuration uses 2,000 bootstrap repetitions and base seed 481516.
-Resampling is paired and clustered by `sample_id`: a source ID is sampled with
-replacement and all relevant rows for that source, including its random draws,
-travel together. The same sampled source IDs are used for raw and clipped
-scores, which makes their difference paired. Deterministic condition-specific
-seeds are derived from the base seed. Calibration thresholds remain frozen
-during this final-test bootstrap; the bootstrap quantifies test-sample
-uncertainty, not a second calibration procedure.
-
-## Reproducibility and provenance
-
-Every prepared row carries dataset, source, split, generation, model, tokenizer,
-contamination, length, and corruption provenance. Score rows add resolved model
-and tokenizer revisions and the scoring feature schema. `manifest.json` records
-the Git commit and dirty-worktree flag, software and accelerator information,
-Slurm identifiers, configuration groups, input/output paths, and stage status.
-Stage completion markers are written only after the caller's row-count and
-uniqueness checks succeed.
-
-The frozen JSON currently leaves dataset, model, and tokenizer revisions as
-`null`. The loaders resolve current Hugging Face commits and record them in
-manifests and rows, but a first run is not content-addressed in advance. For a
-strict future replication, pin the recorded revisions in a new configuration
-and use a new run ID. Do not mix rows from different resolved revisions.
-
-On Delta, keep small source code and launch material under `/u`, reusable
-environments and deliberately retained caches under `/projects`, and the
-high-volume JSONL score packs, run directories, and results under `/work/hdd`.
-The 78,000 token-feature rows plus a second Binoculars file per cell make
-home-directory storage inappropriate; `/work/hdd` provides the intended
-capacity and scratch I/O profile. This placement is an operational convention,
-not currently enforced by the JSON configuration or Slurm wrapper: relative
-paths resolve below `--workspace`, and the wrapper defaults that workspace to
-`$PWD`.
-
-## Full-scale versus engineering results
-
-Only the paper values above define the frozen full-scale study. The current
-small configurations differ deliberately:
-
-| Setting | Paper | `configs/smoke.json` | Delta Qwen 0.5B smoke |
-|---|---:|---:|---:|
-| Split sizes | 500/500/2,000 | 4/4/8 | 4/4/4 |
-| Total sources | 3,000 | 16 | 12 |
-| Generation seeds | 101/202/303 | 101/202/303 | 101 only |
-| Continuation target | 220 | 220 | 64 |
-| Ratios | 0/5/10/20/30/40/50% | 0/10/50% | 0/20/50% |
-| Random draws | 3 | 1 | 1 |
-| Detectors | 7 | 7 | 6; Binoculars skipped |
-| Bootstrap repetitions | 2,000 | 50 | 5 |
-| Pooled hidden state | off | off | on for schema exercise |
-
-Use the following result labels consistently:
-
-- **Smoke** means a bounded execution or contract check. The dedicated Delta
-  smoke is explicitly `SMOKE_TEST_DEBUG_ONLY_NOT_FOR_SCIENTIFIC_USE`.
-- **Pilot/debug** means any reduced configuration, override, historical toy
-  output, performance experiment, or failure investigation. It cannot be
-  pooled with or reported as a paper result.
-- **Primary** means the nine frozen Granite/Mistral/Qwen-32B cells.
-- **Replication** means the three frozen Erebus cells, analyzed separately as a
-  cross-family replication.
-- **Scaling** means the four-size Qwen series, reusing the primary Qwen 32B
-  cells.
-- **External benchmark** means a new corpus evaluated after the internal study.
-  Its result must be labeled separately and must not alter the primary analysis.
-
-## External benchmarks and interpretation risks
-
-### Beemo realistic-edit primary follow-up
-
-The benchmark-centered redesign is frozen separately in
-[`archive/studies/beemo/config.json`](../../archive/studies/beemo/config.json) and fully specified in
-[`archive/studies/beemo/SCIENTIFIC_DESIGN.md`](../../archive/studies/beemo/SCIENTIFIC_DESIGN.md). It is not a 22nd
-cell and must not be pooled with the 21 synthetic cells. It uses all 2,187
-Beemo record groups, keeps each human/original/expert/six-LLM-edit family in one
-split, and assigns 437/875/875 groups to clipping tuning, human-only
-calibration, and final testing.
-
-The primary positive is the expert-edited machine output and the negative is
-the independent human response. GPT2-XL, OPT-1.3B, Falcon-7B, and Qwen2-7B are
-the four primary reference scorers for the six single-model detectors; Granite
-3.3 8B is optional, and the frozen Falcon pair provides Binoculars. The
-single-model detectors score only released response text with native tokenizer
-special-token behavior and no silent truncation. Binoculars uses output-only
-scoring with its upstream 512-token limit. Clipping tuning gives equal objective
-weight to original, expert, pooled-Llama, and pooled-GPT families. Test
-uncertainty is paired and clustered by Beemo ID. This is a new native benchmark
-protocol, not a frozen-threshold transfer claim from one of the original cells.
-
-The Beemo package has local synthetic coverage only until a real two-GPU Delta
-gate and full run pass. The completed Granite splice audit motivates this
-redesign but does not validate Beemo CUDA execution or scientific outputs.
-
-### Preregistered Granite-XSum splice-artifact audit
-
-Before interpreting synthetic contamination as realistic human editing, run the
-separate paired audit configured by
-[`archive/studies/splice_audit/splice_artifact_audit_granite_xsum.json`](../../archive/studies/splice_audit/splice_artifact_audit_granite_xsum.json).
-It reuses a completed Granite 3.3 8B Base x XSum cell but never changes that
-cell or the 21-cell primary protocol. Five hundred deterministically selected
-test sources receive one same-prompt alternative Granite continuation generated
-with seed 404. At 10%, 30%, and 50%, the audit crosses donor authorship (human
-versus alternative Granite) with placement (the paper's arbitrary token windows
-versus complete sentence-aligned replacement). Token-window pairs use identical
-replacement windows, token budgets, and seeds; sentence pairs use identical
-recipient sentence positions. The clean continuation is common to every curve.
-
-Detector direction, clipping specifications, and 1%/5% FPR calibration
-thresholds are imported unchanged from the completed source cell. No audit row
-may tune or recalibrate them. The primary diagnostic is boundary-artifact share:
-
-```text
-(clean TPR robustness AUC - LLM-donor robustness AUC)
------------------------------------------------------
-(clean TPR robustness AUC - human-donor robustness AUC)
-```
-
-The 0.30 and 0.70 bands are preregistered interpretation heuristics, not formal
-hypothesis-test cutoffs. A denominator at or below 0.02 is marked
-non-interpretable. The redesign decision emphasizes log likelihood, rank, log
-rank, and LRR, while entropy, entropy gap, and Binoculars remain supporting
-analyses. Source-cluster bootstraps use the same resampled source indices for
-each paired human/LLM comparison. Boundary-local token diagnostics are reported
-separately from document-level results.
-
-If most core comparisons exceed 0.70 or sentence alignment removes the main
-clipping benefit, the 21-cell results remain valid only as a synthetic
-token-splice stress test; a realistic sentence-aligned primary study must then
-be designed. Source manifests, base human/LLM continuations, and clean results
-remain reusable, but newly constructed contaminated texts require new scoring.
-
-An external benchmark must import the originating cell's frozen direction,
-clipping specification, raw and clipped calibration thresholds, detector
-formula, tokenizer/model revisions, prompt/generation policy where applicable,
-and feature schema. It may report performance under those frozen choices, but
-must not retune clipping or recalibrate thresholds on the external benchmark.
-The current evaluator always performs the internal three-split tuning and
-calibration protocol; a dedicated frozen-spec external-evaluation entry point
-is still required before such benchmarks can be run safely.
-
-Contamination can change more than authorship evidence. In particular, entropy
-and entropy-gap may detect disrupted local coherence or tokenizer/statistical
-artifacts at the human/LLM splice boundary. A robustness gain for these
-detectors must therefore not be interpreted automatically as better authorship
-detection. Report random versus suffix-tail results separately, retain length
-and realized-ratio provenance, and consider boundary-matched controls in future
-work.
-
-Other current risks are recorded rather than hidden: no full model/dataset
-matrix has been validated locally; real CUDA placement, throughput, and Slurm
-resume behavior remain cluster-only; and source selection uses a
-target-independent word-length filter that can still fail later for an unusual
-target tokenizer.
-
-## Which changes invalidate which artifacts
-
-Always use a new run ID for a material protocol/configuration change. General
-resume keys do not encode every configuration value.
-
-| Change | Regenerate prepared text? | Rescore token features? | Re-evaluate? |
-|---|---:|---:|---:|
-| Dataset/revision, source IDs, split sizes, selection seed | Yes, including source manifest | Yes | Yes |
-| Target model/tokenizer/revision, prompt, generation seed or sampling settings | Yes, including base generation and tail cache | Yes | Yes |
-| Human-contamination ratio, draw count, corruption seed, length rule, or construction algorithm | Rebuild contaminated rows; rebuild tail cache if candidate selection changed | Yes for affected rows | Yes |
-| Tail candidate scoring model/formula | Rebuild tail cache and tail rows | Yes for affected rows | Yes |
-| Scoring model/revision, max-token truncation, token-feature or detector formula | No if prepared text is unchanged | Yes | Yes |
-| Clipping quantiles/tuning mixture, target FPR, bootstrap seed/repetitions, metric or plot selection | No | No, if existing token features suffice | Yes |
-| Plot styling only | No | No | No; regenerate plots only |
-| External benchmark | Prepare and score its new texts | Yes | Apply frozen internal choices only; do not retune |
+Changes to sources, generation/tokenizer or contamination require rebuilding
+affected texts/features. A formula change can reuse features only when every
+required component/position is saved. Tuning/guard/bootstrap changes need a new
+evaluation ID, not new GPU inference when features suffice. Styling needs only
+plotting. Preserve historical outputs and record amendments. Optional vLLM,
+unreleased models, actual hardware timings and empirical length distributions
+require their own evidence; current code/config alone does not establish them.

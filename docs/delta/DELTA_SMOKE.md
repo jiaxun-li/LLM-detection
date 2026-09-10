@@ -5,6 +5,11 @@ Delta. It uses `Qwen/Qwen2.5-0.5B`, 12 XSum validation documents, one A100 GPU,
 and the six target-model detectors. It does **not** run Binoculars or Falcon and
 must not be used as a scientific result.
 
+This is a real-model engineering check, not the no-download
+[repository-layout smoke](REPOSITORY_SMOKE.md) and not the official RAID
+Falcon-component gate. It does not need repeating to inspect the completed
+nine-cell/RAID bundle or after documentation-only changes.
+
 The smoke also validates the compact `target-token-features-v2` score schema:
 top-10 token IDs/log-probabilities, probability margins, and the optional
 mean-pooled final hidden state. The paper configuration leaves pooled hidden
@@ -13,7 +18,17 @@ states disabled unless explicitly requested.
 The job is not submitted automatically. Run the commands below from an
 authorized Delta login session.
 
-## One-time environment setup
+## Existing installation first; setup only for a new installation
+
+Jiaxun's working installation should be activated, not rebuilt:
+
+```bash
+cd ~/LLM-detection
+source tools/delta/activate_environment.sh
+```
+
+The prompt says `llm-detection`; the physical directory deliberately remains
+`/projects/bhuc/jli101/venvs/delta-smoke`. The stable branch is `main`.
 
 From the repository root, create a dedicated virtual environment on project
 storage. The setup script defaults to Delta's `miniforge3-python` module and
@@ -33,7 +48,7 @@ Put model and dataset caches on a project or scratch filesystem with adequate
 quota. For example:
 
 ```bash
-export SMOKE_CACHE_ROOT="$SCRATCH/llm-detection-smoke"
+export SMOKE_CACHE_ROOT="/work/hdd/bhuc/$USER/llm-detection-smoke"
 mkdir -p "$SMOKE_CACHE_ROOT"
 ```
 
@@ -47,23 +62,27 @@ The wrapper requires an explicit Delta charge account. It contains no account
 name and refuses a completed `RUN_ID` unless `FORCE=1` is deliberately set.
 
 ```bash
-ACCOUNT=<delta-charge-account> \
-VENV_PATH="$PWD/.venv-delta-smoke" \
-SMOKE_CACHE_ROOT="$SCRATCH/llm-detection-smoke" \
+ACCOUNT=bhuc-delta-gpu \
+VENV_PATH="/projects/bhuc/$USER/venvs/delta-smoke" \
+SMOKE_CACHE_ROOT="/work/hdd/bhuc/$USER/llm-detection-smoke" \
 bash tools/delta/submit_delta_smoke.sh
 ```
 
 Equivalent argument form:
 
 ```bash
-bash tools/delta/submit_delta_smoke.sh --account <delta-charge-account>
+VENV_PATH="/projects/bhuc/$USER/venvs/delta-smoke" \
+SMOKE_CACHE_ROOT="/work/hdd/bhuc/$USER/llm-detection-smoke" \
+bash tools/delta/submit_delta_smoke.sh --account bhuc-delta-gpu
 ```
 
 The wrapper prints `submitted_job_id`, resolved paths, and log names. To resume
 an interrupted run, reuse the printed run ID:
 
 ```bash
-ACCOUNT=<delta-charge-account> \
+ACCOUNT=bhuc-delta-gpu \
+VENV_PATH="/projects/bhuc/$USER/venvs/delta-smoke" \
+SMOKE_CACHE_ROOT="/work/hdd/bhuc/$USER/llm-detection-smoke" \
 RUN_ID=<previous-run-id> \
 bash tools/delta/submit_delta_smoke.sh
 ```
@@ -119,7 +138,7 @@ The final expected artifacts and counts are:
 |---|---:|
 | `selected_sources.jsonl` | 12 distinct XSum IDs, split 4/4/4 |
 | `base_generations.jsonl` | 12 uncontaminated model continuations |
-| `tail_candidate_cache.jsonl` | 12 once-computed white-box token orderings |
+| `tail_candidate_cache.jsonl` | 12 once-computed candidate-span score/order records |
 | `clean_data.jsonl` | 24 rows: one human and one LLM baseline per ID |
 | `contaminated_data.jsonl` | 48 rows: random/tail at 0.2/0.5 per ID |
 | `data.jsonl` | 72 unique prepared rows total |
@@ -166,12 +185,12 @@ update `LATEST_SUCCESSFUL.txt`.
 
 ## Runtime and charge estimate
 
-With cached model/dataset files, expect roughly 5–15 minutes on one A100. A cold
-cache or congested filesystem can extend that into the 15–30 minute range. That
-is approximately 0.08–0.5 allocated GPU-hours; the 45-minute limit caps the job
-at 0.75 one-GPU hours. Delta allocation charging may apply partition-specific
-weights, so treat these as resource-time estimates rather than an account
-billing guarantee.
+The script's wall limit is 45 minutes (0.75 reserved GPU-hours at one GPU),
+not a measured prediction for another launch. Runtime depends on dataset/model
+cache availability, filesystem traffic and allocation startup. Queue delay is
+separate. Delta billing may apply partition-specific weights; resource time
+is not a guaranteed account debit. Use completed `sacct` records for a measured
+estimate rather than extrapolating from the no-inference repository smoke.
 
 ## Local no-GPU verification
 

@@ -2,6 +2,8 @@
 
 | Guide | What it answers |
 |---|---|
+| [Final results guide](FINAL_RESULTS_GUIDE.md) | Which accepted files support the report, and how should their tables be read? |
+| [Documentation audit](DOCUMENTATION_AUDIT.md) | What was checked against code/results and what remains unverified? |
 | [Repository map](REPOSITORY_MAP.md) | Which folder or program should I use? |
 | [Configuration guide](CONFIGURATION.md) | What are JSON configurations and which one applies? |
 | [Codebase guide](CODEBASE_GUIDE.md) | How do stages, outputs, restarts, and tests work? |

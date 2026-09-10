@@ -1,474 +1,275 @@
-# Running the sharded RAID study on NCSA Delta
+# RAID operations: preserved base runs and corrected final results
 
-The authoritative Delta launcher is `RAID/submit_raid.sh`. It creates one
-dependency graph:
+The accepted paper-facing RAID result is the corrected **Binocular-origin**
+revision, not the original `binoculars` mean-gap base result. Existing data and
+Falcon packs are reused. Do not submit preparation or full inference to inspect
+the completed result. For formulas and scientific selection see
+[SCIENTIFIC_DESIGN.md](SCIENTIFIC_DESIGN.md) and the
+[detector amendment](../DETECTOR_REVISION.md).
 
-1. CPU-only preparation and checksum-keyed index caching;
-2. four independent one-GPU Falcon shards;
-3. four independent two-GPU Binoculars shards;
-4. CPU-only merge, evaluation, plotting, and validation.
+## 1. Canonical source and output identities
 
-All 13 variants of a source stay in one shard. Final evaluation starts only
-after both score arrays pass and the merge verifies exact stable-key coverage.
+| Layer | Recorded identifier/path | Meaning |
+|---|---|---|
+| Full base source | `raid-full-excluded500-bootstrap500-provisional-20260824T132810Z` | Preserved data, Falcon scores, legacy Binocular scores and contamination cache |
+| Historical bootstrap promotion | `raid-full-excluded500-bootstrap2000-final-20260825T065701Z` | Evaluation-only 2,000-bootstrap legacy result, before origin correction |
+| Corrected RAID revision | `raid-origin-anchored-v41-20260907T044156Z` | Accepted eight-detector origin/gap source result |
+| Final local bundle | `downloads/current/primary-nine-plus-raid-final-20260908T150247Z/` | Validated report/download artifact |
 
-## 1. Checkout, environment, and storage
+The accepted base has 12,871 sources after excluding all 500 development
+sources; tuning/calibration/test counts are 5,148/2,574/5,149. There are 167,323
+prepared and scorer rows (13 per source). The accepted revision has 416 metric
+rows, eight source detectors, 16 universal specs, 32 rate-oracle specs, and
+2,000 bootstrap repetitions. The source eight-detector result retains
+`binocular_gap` for provenance. Its paper-facing projection drops that method:
+seven detectors, 364 metric rows, and three paper plots. Both the source and
+paper subtrees contain three plots, so the full exported RAID subtree has six
+PNGs, not three.
+
+The accepted RAID version is v4.1. Current shared code is v4.2 because of the
+later primary Qwen32–SQuAD LRR guard; the user audited the selected RAID LRR
+specs as valid and did not rerun RAID. Do not relabel the preserved v4.1 output
+as v4.2 or assume its gate matches a newly reorganized source tree.
+
+## 2. Delta environment and storage
+
+These are Bash commands on Delta, not PowerShell on Windows:
 
 ```bash
 cd ~/LLM-detection
 git branch --show-current
-git pull --ff-only
 git status --short --branch
-
+source tools/delta/activate_environment.sh
 readlink -f runs
 readlink -f results
 df -h /work/hdd/bhuc/$USER
-
-source /projects/bhuc/$USER/venvs/delta-smoke/bin/activate
-python -m pip install 'rapidfuzz>=3.0'
 accounts
+squeue -u "$USER"
 ```
 
-The default launcher accounts are `bhuc-delta-cpu` for CPU jobs and
-`bhuc-delta-gpu` for GPU jobs. If `accounts` reports different project names,
-export `CPU_ACCOUNT` and `GPU_ACCOUNT` before submission.
+Stable branch is `main`. Activation displays `llm-detection` without moving the
+installed `delta-smoke` environment. Do not reinstall rapidfuzz or other
+packages to inspect an existing result. Both storage links and the RAID CSV
+must resolve below `/work/hdd`. The shared CSV is normally
+`/work/hdd/bhuc/jli101/raid/train.csv`; verify rather than redownload it.
 
-`runs` and `results` must resolve below `/work/hdd`. The labeled RAID CSV must
-also remain below `/work/hdd`:
+`RAID/submit_raid.sh` defaults to a CPU-type account for preparation/finalize.
+Jiaxun's recorded account is GPU-type only. Before any deliberately new base
+submission set all five values, including the reserved GPU for CPU phases:
 
 ```bash
-export RAID_DATA_PATH=/work/hdd/bhuc/$USER/raid/train.csv
-test -s "$RAID_DATA_PATH"
-ls -lh "$RAID_DATA_PATH"
-sha256sum "$RAID_DATA_PATH"
-```
-
-## 2. Mandatory four-shard smoke gate
-
-A canceled preparation index may be adopted for a bounded smoke only when the
-index sits beside its original manifest and has an empty WAL. The runner checks
-the original manifest's input SHA-256 and validates the SQLite schema and
-relationship indexes. Omit `REUSE_INDEX_PATH` when no such index exists; the
-CPU job will build the persistent checksum cache instead.
-
-If a previous bounded run already completed preparation, prefer adopting its
-prepared artifacts instead of reading the CSV or SQLite index again. Adoption
-requires the same dataset provenance, source limit, split/selection protocol,
-and shard count. It validates every prepared key and shard assignment, copies
-the immutable preparation under the new run ID, and records its source run and
-Git commit in `prepare.complete.json`.
-
-```bash
-cd ~/LLM-detection
-mkdir -p logs
-
-export NUM_SHARDS=4
-export LIMIT_SOURCES=64
-export BOOTSTRAP_REPETITIONS=100
-export DEBUG_ONLY=1
-export INDEX_CACHE_DIR=/work/hdd/bhuc/$USER/raid/index-cache
-export RAID_RUN_ID="raid-sharded-smoke-$(date -u +%Y%m%dT%H%M%SZ)"
-
-# Optional bounded-smoke salvage only:
-# export REUSE_INDEX_PATH="$(readlink -f runs/raid/<old-run-id>/raid_index.sqlite3)"
-# Or adopt a completed bounded preparation:
-# export ADOPT_PREPARED_RUN_DIR="$(readlink -f runs/raid/<prepared-run-id>)"
-
-bash RAID/submit_raid.sh
-```
-
-The launcher prints and saves all identifiers in:
-
-```text
-/work/hdd/bhuc/$USER/raid/last_workflow.env
-```
-
-After reconnecting:
-
-```bash
-cd ~/LLM-detection
-source /work/hdd/bhuc/$USER/raid/last_workflow.env
-
-squeue -j "$PREP_JOB_ID,$FALCON_JOB_ID,$BINOCULARS_JOB_ID,$FINALIZE_JOB_ID"
-sacct -j "$PREP_JOB_ID,$FALCON_JOB_ID,$BINOCULARS_JOB_ID,$FINALIZE_JOB_ID" \
-  --format=JobID,JobName,State,Elapsed,AllocTRES,ExitCode
-```
-
-After the finalize job completes, independently rerun the bounded validation:
-
-```bash
-python RAID/validate_raid.py \
-  --run-id "$RAID_RUN_ID" \
-  --limit-sources 64 \
-  --bootstrap-repetitions 100
-```
-
-Relevant logs are:
-
-```bash
-tail -n 100 "logs/raid-prepare-$PREP_JOB_ID.err"
-tail -n 100 "logs/raid-finalize-$FINALIZE_JOB_ID.err"
-ls logs/raid-falcon-${FALCON_JOB_ID}_*.err
-ls logs/raid-binoculars-${BINOCULARS_JOB_ID}_*.err
-```
-
-The dependency graph reports success only when
-`results/raid/$RAID_RUN_ID/validation_report.json` contains
-`validation_status: pass`. A smoke has 64
-sources, 832 prepared rows, four complete shards per scorer, fourteen detector
-universal specifications (seven full and seven eligible) plus 28 fixed-bin
-rate-oracle specifications, only
-5% FPR, and 100 bootstrap repetitions. It remains
-`debug_only` and is not a scientific result.
-
-## 3. Preserve artifacts and freeze the development exclusion
-
-Do not delete the RAID CSV, checksum-keyed index cache, 64-source smoke,
-500-source pilot, score packs, or pilot comparison results. A new run ID keeps
-the full-data artifacts separate. The only scientific cleaning step is to
-exclude the 500 pilot development sources before the final split.
-
-Locate and validate the canonical exclusion file:
-
-```bash
-cd ~/LLM-detection
-
-export PILOT_RESULTS_ROOT="$(readlink -f ~/LLM-detection-fast-smoke/results)"
-export EXCLUDE_SOURCE_IDS_PATH="$PILOT_RESULTS_ROOT/raid/raid-pilot-500-20260823T165957Z/tuning_comparison_v1/development_source_ids.json"
-
-python - "$EXCLUDE_SOURCE_IDS_PATH" <<'PY'
-import hashlib
-import json
-import sys
-from pathlib import Path
-
-path = Path(sys.argv[1]).resolve()
-payload = json.loads(path.read_text(encoding="utf-8"))
-source_ids = [str(value) for value in payload["source_ids"]]
-
-assert payload["must_be_excluded_from_future_full_benchmark"] is True
-assert payload["source_count"] == 500
-assert len(source_ids) == 500
-assert len(set(source_ids)) == 500
-
-print("exclusion_path:", path)
-print("source_count:", len(source_ids))
-print("sha256:", hashlib.sha256(path.read_bytes()).hexdigest())
-PY
-```
-
-Also verify storage without deleting anything:
-
-```bash
-readlink -f runs
-readlink -f results
-df -h /work/hdd/bhuc/$USER
-du -sh \
-  /work/hdd/bhuc/$USER/raid/train.csv \
-  /work/hdd/bhuc/$USER/raid/index-cache \
-  "$(readlink -f ~/LLM-detection-fast-smoke/runs)/raid/raid-pilot-500-20260823T165957Z" \
-  "$(readlink -f ~/LLM-detection-fast-smoke/results)/raid/raid-pilot-500-20260823T165957Z"
-```
-
-## 4. Provisional unbounded run with 500 bootstraps
-
-Do not explicitly reuse an interrupted run index for a full result. The first
-full preparation builds a checksum-keyed completed cache on the CPU partition;
-subsequent runs with the identical CSV reuse it automatically.
-
-This first unbounded pass uses every non-development source and all GPU scoring,
-but only 500 bootstrap repetitions. It is deliberately labeled `debug_only` and
-is provisional. If the full-data diagnostics are satisfactory, retain its
-scores. Before the frozen 2,000-repetition confirmatory evaluation, add and
-audit an evaluation-only promotion path under a new result ID so model
-inference is not repeated.
-
-```bash
-cd ~/LLM-detection
-unset LIMIT_SOURCES REUSE_INDEX_PATH ADOPT_PREPARED_RUN_DIR
-
 export GPU_ACCOUNT=bhuc-delta-gpu
 export GPU_PARTITION=gpuA100x4
-# This user currently has only a GPU-type allocation, so CPU phases use the
-# same account and partition. Delta therefore requires one reserved GPU for
-# prepare and finalize even though those phases perform CPU-only work.
 export CPU_ACCOUNT=bhuc-delta-gpu
 export CPU_PARTITION=gpuA100x4
 export CPU_GPUS_PER_NODE=1
-
-export NUM_SHARDS=4
-export RAID_DATA_PATH=/work/hdd/bhuc/$USER/raid/train.csv
-export INDEX_CACHE_DIR=/work/hdd/bhuc/$USER/raid/index-cache
-export BOOTSTRAP_REPETITIONS=500
-export DEBUG_ONLY=1
-export RAID_RUN_ID="raid-full-excluded500-bootstrap500-provisional-$(date -u +%Y%m%dT%H%M%SZ)"
-
-test -s "$RAID_DATA_PATH"
-test -s "$EXCLUDE_SOURCE_IDS_PATH"
-case "$(readlink -f runs)" in /work/hdd/*) ;; *) echo "runs is not on /work/hdd"; exit 2 ;; esac
-case "$(readlink -f results)" in /work/hdd/*) ;; *) echo "results is not on /work/hdd"; exit 2 ;; esac
-
-bash RAID/submit_raid.sh
 ```
 
-Keep the same `RAID_RUN_ID`, shard count, input, and scientific configuration
-when resubmitting after a timeout. Individual shard score packs are append-safe.
-Never run multiple unsharded `run_raid.py --stage score` processes against one
-run directory. Do not reuse this provisional run ID with a different bootstrap
-count.
+CPU-only preparation and evaluation remain CPU algorithms; the GPU reservation
+is an account requirement. Missing this override causes Slurm rejection.
 
-## 5. Completion contract
+## 3. Corrected origin gate, shards and evaluation
 
-Scientific completion requires all of the following:
+Use `tools/delta/delta_detector_revision.sbatch`, not the base workflow launcher.
+It supports `REVISION_STAGE=gate`, `score`, `evaluate` (plus `primary` for the
+separate primary study). Required variables are `SOURCE_RUN_ID` and a **new**
+`REVISION_ID`; optional `NUM_SHARDS` defaults to four, and
+`BOOTSTRAP_REPETITIONS` defaults to 2,000.
 
-- preparation, all Falcon shards, and all Binoculars shards passed;
-- merged Falcon and Binoculars keys exactly equal prepared keys;
-- model provenance is identical across each scorer's shards;
-- manifest reports all five logical stages complete;
-- all seven raw, full-universal-clipped, and eligible-universal-clipped
-  detectors are present, together with the four fixed-bin rate-oracle
-  configurations per detector;
-- every rate-specific bound has paired `none`, attacked-bin, and represented-
-  attack trade-off rows;
-- only the 5% FPR target is present;
-- all 500 pilot-development sources are absent from preparation and every split;
-- 2,000 bootstrap repetitions use paired source-cluster resampling in the
-  confirmatory result; the initial 500-repetition run remains provisional;
-- contamination and truncation audits are complete;
-- `validation_report.json` reports `validation_status: pass`;
-- stderr contains no traceback, CUDA failure, or offload surprise.
+The gate also requires `REFERENCE_METRICS`: a reviewed local copy of upstream
+Binoculars `metrics.py`. That Python module is executed, so do not point it at
+unreviewed downloaded code. The wrapper first runs no-download regression
+tests, then the real full-input tokenizer preflight and a bounded GPU pipeline
+probe. The earlier synthetic test PASS is not the real gate PASS.
 
-Retrieve the small `results/raid/<run-id>/` directory. Leave multi-gigabyte
-prepared data, caches, and score packs under `/work/hdd`.
-
-## 6. Export the accepted provisional results for local analysis
-
-Archive only the result directory. For the accepted labeled-release run this is
-about 51 MB before compression; its 23 GB run/score directory must remain on
-Delta.
-
-```bash
-cd ~/LLM-detection
-
-export RAID_SOURCE_RUN_ID=raid-full-excluded500-bootstrap500-provisional-20260824T132810Z
-export RAID_EXPORT_ROOT=/work/hdd/bhuc/$USER/raid/result-exports
-export RAID_RESULTS_ROOT="$(readlink -f results)"
-export RAID_RUNS_ROOT="$(readlink -f runs)"
-
-test -s "$RAID_RESULTS_ROOT/raid/$RAID_SOURCE_RUN_ID/validation_report.json"
-test -s "$RAID_RUNS_ROOT/raid/$RAID_SOURCE_RUN_ID/manifest.json"
-mkdir -p "$RAID_EXPORT_ROOT"
-cp "$RAID_RUNS_ROOT/raid/$RAID_SOURCE_RUN_ID/manifest.json" \
-  "$RAID_EXPORT_ROOT/$RAID_SOURCE_RUN_ID-source-manifest.json"
-cp "$RAID_RUNS_ROOT/raid/$RAID_SOURCE_RUN_ID/prepare.complete.json" \
-  "$RAID_EXPORT_ROOT/$RAID_SOURCE_RUN_ID-prepare.complete.json"
-cp "$RAID_RUNS_ROOT/raid/$RAID_SOURCE_RUN_ID/score.complete.json" \
-  "$RAID_EXPORT_ROOT/$RAID_SOURCE_RUN_ID-score.complete.json"
-tar -czf \
-  "$RAID_EXPORT_ROOT/$RAID_SOURCE_RUN_ID-results.tar.gz" \
-  -C "$RAID_RESULTS_ROOT/raid" "$RAID_SOURCE_RUN_ID" \
-  -C "$RAID_EXPORT_ROOT" \
-  "$RAID_SOURCE_RUN_ID-source-manifest.json" \
-  "$RAID_SOURCE_RUN_ID-prepare.complete.json" \
-  "$RAID_SOURCE_RUN_ID-score.complete.json"
-sha256sum "$RAID_EXPORT_ROOT/$RAID_SOURCE_RUN_ID-results.tar.gz" | tee \
-  "$RAID_EXPORT_ROOT/$RAID_SOURCE_RUN_ID-results.tar.gz.sha256"
-ls -lh "$RAID_EXPORT_ROOT/$RAID_SOURCE_RUN_ID-results.tar.gz"*
-```
-
-Copy the archive and checksum from a Windows PowerShell terminal. If a local
-SSH alias is configured for Delta, it may replace the hostname below.
-
-```powershell
-$RunId = 'raid-full-excluded500-bootstrap500-provisional-20260824T132810Z'
-$Destination = 'E:\Research\LLM detection\downloads\RAID'
-New-Item -ItemType Directory -Force $Destination | Out-Null
-
-scp "jli101@dt-login.delta.ncsa.illinois.edu:/work/hdd/bhuc/jli101/raid/result-exports/$RunId-results.tar.gz" "$Destination\"
-scp "jli101@dt-login.delta.ncsa.illinois.edu:/work/hdd/bhuc/jli101/raid/result-exports/$RunId-results.tar.gz.sha256" "$Destination\"
-Get-FileHash "$Destination\$RunId-results.tar.gz" -Algorithm SHA256
-tar -xzf "$Destination\$RunId-results.tar.gz" -C $Destination
-```
-
-Compare the PowerShell hash with the value in the downloaded `.sha256` file.
-The repository ignores `/downloads`, so this analysis copy will not enter Git.
-
-## 7. Promote the accepted run to 2,000 bootstraps
-
-After the promotion code has been committed by the user, pushed from Windows,
-and pulled on Delta, submit one evaluation-only job. This job reuses the
-167,323-row Falcon and Binoculars score packs and performs no inference.
-
-```bash
-cd ~/LLM-detection
-
-export RAID_SOURCE_RUN_ID=raid-full-excluded500-bootstrap500-provisional-20260824T132810Z
-export RAID_PROMOTION_ID="raid-full-excluded500-bootstrap2000-final-$(date -u +%Y%m%dT%H%M%SZ)"
-
-case "$(readlink -f runs)" in /work/hdd/*) ;; *) echo "runs is not on /work/hdd"; exit 2 ;; esac
-case "$(readlink -f results)" in /work/hdd/*) ;; *) echo "results is not on /work/hdd"; exit 2 ;; esac
-test -s "runs/raid/$RAID_SOURCE_RUN_ID/falcon_scores.jsonl"
-test -s "runs/raid/$RAID_SOURCE_RUN_ID/binoculars_scores.jsonl"
-
-BOOTSTRAP_JOB_ID="$(sbatch --parsable \
-  --account=bhuc-delta-gpu \
-  --export=ALL,RAID_SOURCE_RUN_ID="$RAID_SOURCE_RUN_ID",RAID_PROMOTION_ID="$RAID_PROMOTION_ID" \
-  RAID/delta_raid_bootstrap_promotion.sbatch)"
-
-mkdir -p /work/hdd/bhuc/$USER/raid
-{
-  printf 'export RAID_SOURCE_RUN_ID=%q\n' "$RAID_SOURCE_RUN_ID"
-  printf 'export RAID_PROMOTION_ID=%q\n' "$RAID_PROMOTION_ID"
-  printf 'export BOOTSTRAP_JOB_ID=%q\n' "$BOOTSTRAP_JOB_ID"
-} > /work/hdd/bhuc/$USER/raid/last_bootstrap_promotion.env
-
-echo "BOOTSTRAP_JOB_ID=$BOOTSTRAP_JOB_ID"
-echo "RAID_PROMOTION_ID=$RAID_PROMOTION_ID"
-```
-
-The prior 500-bootstrap finalize took about 33 minutes. Because the bootstrap
-loops are serial, budget roughly 2--3 hours for 2,000 repetitions; the wrapper
-allows eight hours. Queue time is additional. Reuse the same promotion ID if
-the job is interrupted; never reuse the provisional run ID with a new count.
-
-After reconnecting, check both Slurm and scientific completion:
-
-```bash
-cd ~/LLM-detection
-source /work/hdd/bhuc/$USER/raid/last_bootstrap_promotion.env
-
-sacct -j "$BOOTSTRAP_JOB_ID" \
-  --format=JobID,JobName,State,Elapsed,MaxRSS,ExitCode
-tail -n 100 "logs/raid-boot2000-$BOOTSTRAP_JOB_ID.err"
-
-python - "$RAID_PROMOTION_ID" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-promotion_id = sys.argv[1]
-root = Path("results/raid") / promotion_id
-manifest = json.loads((root / "promotion_manifest.json").read_text())
-report = json.loads((root / "validation_report.json").read_text())
-marker = json.loads((root / "promotion.complete.json").read_text())
-
-print("source_run_id:", manifest["source_run_id"])
-print("completion_status:", manifest["completion_status"])
-print("completed_stages:", manifest["completed_stages"])
-print("bootstrap_repetitions:", report["bootstrap_repetitions"])
-print("validation_status:", report["validation_status"])
-print("completion_marker:", marker)
-PY
-```
-
-Expected values are `complete`, `['evaluate', 'plot', 'validate']`, `2000`, and
-`pass`. Download this final result directory with the same archive procedure
-used above, substituting `RAID_PROMOTION_ID` for `RAID_SOURCE_RUN_ID`.
-
-## 8. Evaluation-only tuning comparison on the bounded 500-source pilot
-
-Do not resubmit preparation or either GPU scorer. After pulling the comparison
-code into the same checkout that contains the completed pilot score packs, run:
-
-```bash
-cd ~/LLM-detection-fast-smoke
-export RAID_RUN_ID=raid-pilot-500-20260823T165957Z
-
-TUNING_JOB_ID="$(sbatch --parsable \
-  --account=bhuc-delta-gpu \
-  archive/raid_pilots/delta_raid_tuning_comparison.sbatch)"
-echo "TUNING_JOB_ID=$TUNING_JOB_ID"
-```
-
-The analysis itself is CPU-only and performs no inference. The wrapper reserves
-one GPU because the available `bhuc-delta-gpu` project account accepts GPU-type
-jobs; no additional model is loaded or downloaded. It requests 120 GB host RAM
-because JSON token-feature packs expand substantially when loaded.
-
-The command refuses an unbounded run unless `--allow-full-run` is explicitly
-provided. It reads existing score packs and writes point estimates only under:
+The current revision code reads:
 
 ```text
-results/raid/<run-id>/tuning_comparison_v1/
+runs/raid/<source-run-id>/
+  manifest.json
+  data.jsonl
+  falcon_scores.jsonl
+  binoculars_scores.jsonl
+  data_shards/part-00000-of-00004.jsonl ... part-00003-of-00004.jsonl
+results/raid/<source-run-id>/contamination_records.csv
 ```
 
-Completion requires `comparison.complete.json`, `method_count: 11`, and the
-following tables: selected specifications, candidate diagnostics, universal
-attack results, contamination-rate results, rate-oracle attack-by-rate results,
-counterfactual clean costs, and the compact leaderboard. It also writes
-`development_source_ids.json`; those 500 sources must be excluded before the
-eventual full benchmark is split. This exploratory pass uses no bootstrap and
-does not modify the original pilot's manifest, validated metrics, plots, or
-frozen specifications.
+It creates:
 
-Check completion with:
+```text
+runs/raid_origin/<new-revision-id>/
+  gate.complete.json
+  part-00000-of-00004.jsonl ... part-00003-of-00004.jsonl
+  part-00000-of-00004.complete.json ... part-00003-of-00004.complete.json
+results/raid/<new-revision-id>/
+  revision_manifest.json
+  revision.complete.json
+  validation_report.json
+  frozen_specs.json
+  metrics.csv
+  attack_summary.csv
+  contamination_summary.csv
+  binoculars_sanity.csv
+  calibration_summary.csv
+  rate_bound_tradeoff_summary.csv
+  contamination_records.csv
+  evaluation_counts.json
+  plots/raid_attack_tpr.png
+  plots/raid_contamination_tpr.png
+  plots/raid_rate_bound_tradeoff.png
+```
+
+Submit gate → scoring array → evaluation with `afterok` dependencies only after
+reviewing inputs and available resources. The four shards partition one study;
+they are not four independent RAID experiments. Every source's 13 rows stays
+together. Array `--array=0-3%2`, for example, limits concurrency to two tasks.
+Scoring uses two GPUs per task and batch/microbatch one. Evaluation is CPU-only
+and can reserve one GPU for the account. Default wrapper RAM/time is 120G/4h;
+override deliberately if needed, not from a guessed runtime.
+
+The accepted shard counts were 41,015/42,861/41,899/41,548. Origin adoption
+(`ADOPT_ORIGIN_RUN_ID`) is an explicit validated score-stage option: compatible
+saved rows may be retained and missing rows scored. Do not copy files manually,
+edit markers, or loosen numeric guards to force reuse. A failed shard does not
+require erasing successful compatible shards. Its dependent evaluation cannot
+complete until a repaired dependency graph points to successful scoring.
+
+The code checks source hashes, gate identity, component provenance, exact row
+coverage and output hashes. Current identities include source-code paths, so
+the repository reorganization changed fingerprints. For a new computation,
+use a new revision and new matching gate; for the already accepted result,
+read its preserved artifacts rather than attempting a new-code no-op resume.
+
+## 4. Inspect accepted completion without changing it
+
+Use the final source result, not a filtered paper view, for its validation
+contract. This read-only example contains errors inside a subshell:
 
 ```bash
-sacct -j "$TUNING_JOB_ID" --format=JobID,JobName,State,Elapsed,MaxRSS,ExitCode
-tail -n 100 "logs/raid-tuning-$TUNING_JOB_ID.err"
-cat "results/raid/$RAID_RUN_ID/tuning_comparison_v1/comparison.complete.json"
+(
+    set -euo pipefail
+    cd ~/LLM-detection
+    source tools/delta/activate_environment.sh
+    python - <<'PY'
+import hashlib
+import json
+from pathlib import Path
+
+root = Path('results/raid/raid-origin-anchored-v41-20260907T044156Z')
+read = lambda name: json.loads((root / name).read_text())
+manifest = read('revision_manifest.json')
+report = read('validation_report.json')
+assert manifest['completion_status'] == 'complete'
+assert report['validation_status'] == 'pass'
+assert read('revision.complete.json') == report
+assert report['bootstrap_repetitions'] == 2000
+assert report['metrics_rows'] == 416
+for name, expected in report['artifacts'].items():
+    data = (root / name).read_bytes()
+    assert len(data) == expected['size'], name
+    assert hashlib.sha256(data).hexdigest() == expected['sha256'], name
+print('PRESERVED RAID ARTIFACT CHECK: PASS')
+PY
+)
 ```
 
-## 9. Evaluation-only trimmed-mean comparison
+For active jobs, inspect `sacct` plus the actual `#SBATCH` stdout/stderr paths.
+Do not print PASS following a failed Python assertion. A missing log is not
+evidence of no errors. Scheduler completion alone does not validate science.
 
-This reuses the completed 500-source Falcon and Binoculars score packs. It does
-not repeat preparation, model loading, or inference:
+## 5. Mandatory four-shard smoke gate for a new base workflow
+
+This section preserves the engineering launch procedure for a deliberately
+new base run; it is **not needed for the completed paper bundle**. The base
+launcher creates prepare → Falcon and legacy Binocular arrays → finalize.
+Final-origin revision still follows separately.
 
 ```bash
-cd ~/LLM-detection-fast-smoke
-export RAID_RUN_ID=raid-pilot-500-20260823T165957Z
-export TRIM_OUTPUT_NAME=trimmed_mean_comparison_v1
-
-TRIM_JOB_ID="$(sbatch --parsable \
-  --account=bhuc-delta-gpu \
-  archive/raid_pilots/delta_raid_trimmed_mean.sbatch)"
-echo "TRIM_JOB_ID=$TRIM_JOB_ID"
+(
+    set -euo pipefail
+    cd ~/LLM-detection
+    mkdir -p logs
+    export GPU_ACCOUNT=bhuc-delta-gpu GPU_PARTITION=gpuA100x4
+    export CPU_ACCOUNT=bhuc-delta-gpu CPU_PARTITION=gpuA100x4 CPU_GPUS_PER_NODE=1
+    export RAID_DATA_PATH=/work/hdd/bhuc/$USER/raid/train.csv
+    export INDEX_CACHE_DIR=/work/hdd/bhuc/$USER/raid/index-cache
+    export NUM_SHARDS=4 LIMIT_SOURCES=64 BOOTSTRAP_REPETITIONS=100 DEBUG_ONLY=1
+    unset REUSE_INDEX_PATH ADOPT_PREPARED_RUN_DIR EXCLUDE_SOURCE_IDS_PATH
+    export RAID_RUN_ID="raid-sharded-smoke-$(date -u +%Y%m%dT%H%M%SZ)"
+    bash RAID/submit_raid.sh
+)
 ```
 
-The wrapper reserves one A100 only because the available project account is a
-GPU-type account. The analysis itself is CPU-only. It writes point estimates
-under `results/raid/<run-id>/trimmed_mean_comparison_v1/` and refuses an
-unbounded run by default.
+The submitter writes `/work/hdd/bhuc/$USER/raid/last_workflow.env` after all
+submissions succeed. Retain a run-specific copy if launching multiple workflows;
+the `last_...` pointer can change. A 64-source base smoke has 832 prepared/scored
+rows and is debug-only. Its 100 bootstraps are not report-ready evidence.
 
-Check it with:
+The base validator reconstructs launch identity, so pass the same settings and
+data path, not just the run ID:
 
 ```bash
-sacct -j "$TRIM_JOB_ID" --format=JobID,JobName,State,Elapsed,MaxRSS,ExitCode
-tail -n 100 "logs/raid-trim-$TRIM_JOB_ID.err"
-cat "results/raid/$RAID_RUN_ID/$TRIM_OUTPUT_NAME/comparison.complete.json"
-column -s, -t < "results/raid/$RAID_RUN_ID/$TRIM_OUTPUT_NAME/summary.csv" | less -S
+(
+    set -euo pipefail
+    cd ~/LLM-detection
+    source tools/delta/activate_environment.sh
+    source /work/hdd/bhuc/$USER/raid/last_workflow.env
+    python RAID/validate_raid.py --run-id "$RAID_RUN_ID" \
+        --data-path "$RAID_DATA_PATH" --limit-sources 64 \
+        --num-shards 4 --bootstrap-repetitions 100 --debug-only
+)
 ```
 
-## 10. Evaluation-only Binoculars component-clipping comparison
+This is a base-workflow validator, not the final origin revision validator.
+Do not point it at `results/raid/<origin-revision>`.
 
-Reuse the completed 500-source Falcon and Binoculars score packs:
+Preparation can reuse a completed checksum-keyed index or adopt a compatible
+completed prepared run (`ADOPT_PREPARED_RUN_DIR`). Interrupted-index salvage
+requires the original manifest, matching CSV hash, valid schema and empty WAL;
+do not use that as an unreviewed full-run shortcut. Full CSV hashing/indexing
+can dominate the runtime even for a small source limit. Never run concurrent
+writers against one index or unsharded score pack.
 
-```bash
-cd ~/LLM-detection-fast-smoke
-export RAID_RUN_ID=raid-pilot-500-20260823T165957Z
-export BINO_COMPONENT_OUTPUT_NAME=binoculars_component_comparison_v1
+## 6. Historical full run and bootstrap promotion
 
-BINO_COMPONENT_JOB_ID="$(sbatch --parsable \
-  --account=bhuc-delta-gpu \
-  archive/raid_pilots/delta_raid_binoculars_components.sbatch)"
-echo "BINO_COMPONENT_JOB_ID=$BINO_COMPONENT_JOB_ID"
-```
+The 500-source exploratory pilot's entire source list was excluded before the
+final split. Preserve its `development_source_ids.json`, not just its size.
+An unbounded base launch requires `EXCLUDE_SOURCE_IDS_PATH`; source count,
+uniqueness and hash must match the reviewed 500-source exclusion. The original
+pilot lived in the separate `LLM-detection-fast-smoke` workspace.
 
-The job performs no inference and downloads no models. One A100 is reserved
-only because the available project account is GPU-type. Results are written
-under `results/raid/<run-id>/binoculars_component_comparison_v1/`.
+The provisional full pass used `BOOTSTRAP_REPETITIONS=500` and `DEBUG_ONLY=1`.
+`RAID/promote_bootstrap.py` and `RAID/delta_raid_bootstrap_promotion.sbatch` then
+reevaluated those same legacy score packs under a new promotion ID with 2,000
+bootstraps, checking unchanged point estimates. They perform no inference but
+do **not** add official-origin components. Therefore promoting the old packs
+is not a substitute for `RAID/revise_detectors.py`.
 
-Check completion with:
+Historical exploratory selectors, trimming and component comparisons are now
+under ignored `archive/raid_pilots/`; a fresh clone does not contain them. They
+are not part of the final operational sequence. Do not rerun them or choose
+different settings after inspecting final test results.
 
-```bash
-sacct -j "$BINO_COMPONENT_JOB_ID" \
-  --format=JobID,JobName,State,Elapsed,MaxRSS,ExitCode
-tail -n 100 "logs/raid-bino-cmp-$BINO_COMPONENT_JOB_ID.err"
-cat "results/raid/$RAID_RUN_ID/$BINO_COMPONENT_OUTPUT_NAME/comparison.complete.json"
-column -s, -t < \
-  "results/raid/$RAID_RUN_ID/$BINO_COMPONENT_OUTPUT_NAME/summary.csv" | less -S
-```
-# Detector-revision launch path
+## 7. Report export and Windows download
 
-For the new gap + origin / LRR / constant-candidate amendment, follow
-[../docs/DETECTOR_REVISION.md](../DETECTOR_REVISION.md), not the legacy full-preparation
-submission path above. Existing preparation and single-model scores are reused.
+The active exporter is `tools/exports/export_final_publication_bundle.py`,
+wrapped by `tools/delta/delta_export_final_publication.sbatch`. Required wrapper
+variables: `FINAL_EXPORT_ID`, `PRIMARY_BUNDLE_ID`, `RAID_REVISION_ID`, and
+`FINAL_EXPORT_ROOT`. It copies the validated source result unchanged to
+`raid/source_eight_detector_result/`, writes filtered CSVs and plots to
+`raid/paper_seven_detector_result/`, and records the projection in
+`raid/raid_export_summary.json`. No fitting or inference is performed.
+
+For the accepted bundle, read the existing local `downloads/current/` copy;
+do not redownload unless it is missing or fails its checksum/hash inventory.
+For any transfer, run `scp` from **Windows PowerShell**, not the Delta terminal.
+Use a full destination filename built by `Join-Path`, or change to the local
+destination directory and copy to `.`. Avoid the old quoted destination ending
+in a backslash, which previously failed on Windows OpenSSH. Check `$LASTEXITCODE`
+after each transfer and `tar`, compare SHA-256 before extraction, and only
+print PASS after all validations succeed. See the
+[final-result guide](../FINAL_RESULTS_GUIDE.md) for the report-facing layout.
+
+Do not delete the original CSV, prepared rows, scorer packs, exact revision
+results, exclusion list or frozen specs merely because a compact export exists.
+The export omits large JSONL and does not by itself support new detector fitting.

@@ -1,142 +1,109 @@
-# Robust LLM Detection Under Human-Text Contamination
+# Robust document detection under contamination
 
-This repository implements a configuration-first, restartable experiment for
-comparing raw token aggregation with one-sided clipped aggregation under random
-and white-box tail human-text contamination. The primary protocol targets an
-ICLR/AISTATS-quality study across XSum, SQuAD, and WritingPrompts.
+This repository contains the completed **nine-cell controlled contamination
+study plus RAID**, comparing raw aggregation with token-level clipping.
+The final reported detectors are log likelihood, rank, log rank, LRR, entropy,
+entropy gap, and Binoculars-origin. Primary Binoculars remains prompt-conditioned;
+RAID uses a separate official output-only scoring protocol.
 
-## Canonical guides
+The controlled constructions splice human-source material into machine
+continuations. They are contamination experiments, not certified grammatical
+human editing. RAID provides a separate heterogeneous attack benchmark.
 
-- Start with the [documentation index](docs/README.md),
-  [configuration guide](docs/CONFIGURATION.md), and
-  [local archive catalog](docs/ARCHIVE_CATALOG.md).
-- [`docs/REPOSITORY_MAP.md`](docs/REPOSITORY_MAP.md) explains active scripts, archived
-  studies, and local downloads. The current released analysis is the corrected
-  nine-cell primary study plus RAID; the broader matrix below records the
-  original study design, not a claim that every planned cell was completed.
-- [`docs/DETECTOR_REVISION.md`](docs/DETECTOR_REVISION.md) specifies the corrected
-  detector reanalysis used by the final results.
-- [`docs/primary/SCIENTIFIC_WORKFLOW.md`](docs/primary/SCIENTIFIC_WORKFLOW.md) defines the frozen
-  21-cell protocol, leakage rules, metrics, result classes, and interpretation.
-- [`docs/CODEBASE_GUIDE.md`](docs/CODEBASE_GUIDE.md) maps that protocol to current
-  modules, files, I/O contracts, resume behavior, tests, and Delta operations.
+## Read these before writing the report
 
-Read both before changing a configuration or launching a full-scale cell.
+1. [Final results guide](docs/FINAL_RESULTS_GUIDE.md): accepted bundle, exact
+   counts, source lineage, table use, and baseline comparison.
+2. [Primary scientific workflow](docs/primary/SCIENTIFIC_WORKFLOW.md) and
+   [RAID scientific design](docs/raid/SCIENTIFIC_DESIGN.md): actual populations,
+   construction, fitting, calibration, estimands and uncertainty.
+3. [Detector and clipping definitions](docs/methods/clipping_method.md):
+   formulas, directions, candidate grids and precise tuning objectives.
+4. [Detector amendment ledger](docs/DETECTOR_REVISION.md): gap versus ratio,
+   numerical anchoring, LRR correction and accepted versions.
+5. [Documentation audit](docs/DOCUMENTATION_AUDIT.md): checks performed,
+   corrected discrepancies and remaining evidence limitations.
 
-## Paper design
+The [documentation index](docs/README.md), [codebase guide](docs/CODEBASE_GUIDE.md),
+[configuration guide](docs/CONFIGURATION.md), and
+[repository map](docs/REPOSITORY_MAP.md) explain the implementation and operations.
 
-The paper configuration is [`configs/paper.json`](configs/paper.json). It
-records:
+## What is completed versus planned?
 
-- 500 clipping-tuning, 500 human calibration, and 2,000 final-test source IDs;
-- three generation seeds that partition those 3,000 IDs;
-- a 30-token prompt, about 220 continuation tokens, temperature 0.8, top-p 0.95;
-- random and white-box tail contamination at 0%, 5%, 10%, 20%, 30%, 40%, and
-  50%, with three random corruption draws;
-- a twelve-token prompt/base round-trip guard and a twenty-token constructed-row
-  guard; the latter was amended before Qwen-32B WritingPrompts scoring after all
-  72,000 positive-ratio constructions were audited (34 exceeded twelve tokens
-  and the maximum was nineteen);
-- Granite 3.3 8B Base, Mistral Small 24B, and Qwen 2.5 32B primary targets;
-- the GPT-NeoX Erebus replication and Qwen 7B/14B/32B/72B scaling models;
-- target-model log likelihood, rank, log rank, DetectLLM LRR, entropy, and
-  entropy gap, plus the Falcon performer/observer Binoculars pair.
+The nine primary cells cross XSum, SQuAD and WritingPrompts with Granite 3.3 8B
+Base, Mistral Small 24B Base and Qwen 2.5 32B. Their source runs contain
+3,000 source groups and 78,000 prepared/scored records per cell; final publication
+tables have 392 metric records per cell and 3,528 combined.
 
-[`configs/smoke.json`](configs/smoke.json) reduces split sizes, corruption
-draws, bootstrap repetitions, and model size without changing the protocol.
+The final RAID revision retains 12,871 source groups after excluding the
+500-source development pilot, with 167,323 prepared/scorer rows and 2,000
+bootstrap replicates. It reports full-universal and eligible-universal clipping,
+with rate-specific oracle bounds as secondary diagnostics.
 
-Granite 3.3 8B Base replaces the originally planned Llama 3.1 8B target so the
-primary study remains reproducible without provider-specific geographic access
-approval. The replacement preserves the approximately 8B base-model scale and
-adds a public Apache-2.0 model from a distinct model family.
+The broader 21-cell model matrix still listed in configs/paper.json is a
+historical plan, not a claim of 21 completed cells. Beemo, splice diagnostics,
+and selector/trim pilots are archived development studies, not additional final
+results. See the [archive catalog](docs/ARCHIVE_CATALOG.md).
 
-## Entry point
+## Where things live
 
-One task handles one dataset × target model:
+| Directory / entry point | Function |
+|---|---|
+| experiment_core/ | Shared preparation, token features, detector aggregation and evaluation |
+| RAID/ | Benchmark-specific data selection, origin scoring, fitting and validation |
+| tools/ | Delta launch/setup, validation, reanalysis and final export |
+| configs/ | Tracked baseline and smoke settings |
+| docs/ | Experiment methods, evidence and operations |
+| tests/ | Active regression tests, independent of ignored archive |
+| run_experiment.py | Base primary pipeline; retains legacy detector behavior |
+| plot_tpr_contamination.py | Primary figure rendering |
+| downloads/current/ | Local validated final publication bundle |
+| downloads/archive/ and archive/ | Local-only historical downloads and programs |
+| paper/ | User-owned writing, outside experiment maintenance |
 
-```bash
-python run_experiment.py \
-  --config configs/smoke.json \
-  --dataset xsum \
-  --model Qwen/Qwen2.5-0.5B \
-  --run-id smoke-xsum-qwen \
-  --stage all
-```
+## Reproducing the accepted analysis
 
-The stages can also be resumed independently:
+A base configuration is not the complete amended method. The historical key
+binoculars denotes an exponential-gap score, not the original ratio. Final
+corrected analysis uses:
 
-```bash
-python run_experiment.py --config configs/smoke.json --dataset xsum \
-  --model Qwen/Qwen2.5-0.5B --run-id smoke-xsum-qwen --stage prepare
-python run_experiment.py --config configs/smoke.json --dataset xsum \
-  --model Qwen/Qwen2.5-0.5B --run-id smoke-xsum-qwen --stage score
-python run_experiment.py --config configs/smoke.json --dataset xsum \
-  --model Qwen/Qwen2.5-0.5B --run-id smoke-xsum-qwen --stage evaluate
-```
+- tools/reanalysis/reevaluate_detector_revision.py for primary saved-feature
+  evaluation, retaining prompt context.
+- RAID/revise_detectors.py for the separate origin gate/scoring/evaluation path.
+- tools/exports/export_final_publication_bundle.py for validated filtering and
+  figure export without refitting.
 
-`archive/legacy_entrypoints/prepare_real_contamination.py`, `archive/legacy_entrypoints/score_real_text.py`, and
-`archive/legacy_entrypoints/evaluate_real_clipping.py` remain as aliases for these three stages. They now
-accept the configuration-first arguments above; the old prototype flags are no
-longer supported.
+Eight primary accepted revisions are from September 4; Qwen32–SQuAD uses the
+later LRR-v4.2 correction. RAID remains the accepted v4.1 run, whose LRR choices
+passed the subsequent positive-cap audit. Current v4.2 code does not retroactively
+change the versions recorded in completed artifacts.
 
-Do not run `--stage all` locally unless model and dataset downloads are
-intentional. The automated tests need no downloads:
+Use original source/revision manifests and corresponding code/model revisions,
+not current JSON defaults alone. Saved per-cell settings differ from defaults.
+Large original JSONL features remain on Delta and are deliberately absent from
+the publication download. Do not discard them after exporting plots.
 
-```bash
+## Local checks and Delta
+
+No-download regression checks:
+
+~~~bash
 python -m unittest discover -s tests -v
-```
+~~~
 
-## Output layout and restart behavior
+Torch-dependent tests may skip in a lightweight local environment. A local unit
+test does not replace the live upstream-component gate. The user-reported
+post-reorganization Delta repository smoke passed all 105 active tests without
+skips; it was an engineering check, not regeneration of scientific results.
 
-Each run writes:
+See [Delta operations](docs/delta/DELTA.md) and
+[RAID operations](docs/raid/DELTA_GUIDE.md). Stable branch is main. The friendly
+interactive environment name is llm-detection; the physical installed venv
+remains delta-smoke to preserve working paths. Before large jobs verify actual
+runs/results links resolve under /work/hdd and check allocation/queue state.
+The user performs every Git commit, push and pull.
 
-```text
-runs/source_manifests/<dataset>-<split>-<count>-seed<seed>-<signature>.jsonl
-runs/<run-id>/manifest.json
-runs/<run-id>/base_generations.jsonl
-runs/<run-id>/tail_candidate_cache.jsonl
-runs/<run-id>/data.jsonl
-runs/<run-id>/target_scores.jsonl
-runs/<run-id>/binoculars_scores.jsonl
-results/<run-id>/metrics.csv
-```
-
-Source manifests are model-independent, so every target model uses identical
-source/sample IDs and split labels. JSONL stages append complete fsynced records,
-repair only an interrupted final line, index completed provenance keys, and
-write completion markers only after row-count/uniqueness validation.
-Repeated SQuAD contexts are deduplicated; short unique passages are packed
-deterministically without reuse before source IDs are assigned, ensuring the
-30+220 token construction has enough target-independent source text.
-
-Each target-score row uses the versioned `target-token-features-v2` schema. It
-keeps per-token log-probability, exact rank, log-rank, and entropy and also saves
-the configured top-k token IDs/log-probabilities, the top-1 versus top-2
-log-probability margin, and the observed target versus top-1 margin. The default
-is `scoring.saved_top_k: 10`. Full-vocabulary logits are deliberately not
-persisted.
-
-`scoring.save_mean_pooled_final_hidden_state` optionally adds one mean-pooled
-final-layer vector per document. It is disabled for paper runs by default
-because it increases forward-pass memory and output size; the dedicated Delta
-smoke configuration enables it to exercise the code path. Score rows and the
-run manifest retain resolved model and tokenizer commit revisions so a
-specialized feature can be reproduced later.
-
-The tidy metrics CSV contains calibrated thresholds, actual FPR, TPR at
-calibrated 1% and 5% FPR, AUROC, normalized partial AUROC over 0–5% FPR, paired
-clipped-minus-raw differences, robustness AUC, clustered bootstrap intervals,
-sample counts, contamination provenance, model revisions, and frozen clipping
-specifications.
-
-## NCSA Delta
-
-See [`docs/delta/DELTA.md`](docs/delta/DELTA.md). The normal job uses `gpuA100x4`; `gpuH200x8` is an
-explicit opt-in for confirmed large-model runs such as Qwen 72B.
-
-Before any matrix work, use the isolated one-GPU Qwen 0.5B gate in
-[`docs/delta/DELTA_SMOKE.md`](docs/delta/DELTA_SMOKE.md). It has an account-aware submission wrapper,
-strict output validation, and a mandatory duplicate-free resume pass.
-
-Implementation status is audited in
-[`docs/primary/REQUIREMENT_CHECKLIST.md`](docs/primary/REQUIREMENT_CHECKLIST.md).
+A new configuration or methodological amendment needs a new run/revision ID.
+An exact resume must preserve the original identity. Do not rerun preparation
+or model inference merely to change documentation, inspect results or redraw
+figures.

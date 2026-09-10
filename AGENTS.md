@@ -61,62 +61,57 @@ in this repository.
 
 ## Current scientific study
 
-The study contains 21 unique cells: three datasets times seven unique target
-models.
+The accepted release is the nine primary cells plus RAID, not the historical
+21-cell matrix in configs/paper.json. Read docs/FINAL_RESULTS_GUIDE.md and
+docs/DOCUMENTATION_AUDIT.md alongside the primary/RAID scientific guides before
+writing claims or planning reanalysis.
 
-- Datasets: XSum, SQuAD, and WritingPrompts.
-- Models: Granite 3.3 8B Base, Mistral Small 24B Base, Qwen 2.5 32B,
-  GPT-NeoX 20B Erebus, and Qwen 2.5 7B/14B/72B.
-- Qwen 32B appears in both the primary and scaling descriptions but is one
-  reusable model/dataset cell, not a duplicate run.
-- Every released full cell includes the six target-model detectors and
-  Binoculars. The dedicated 0.5B smoke test intentionally skips Binoculars.
-- Full paper settings are in `configs/paper.json`: 3,000 unique sources,
-  78,000 prepared/scored rows per cell, random and tail contamination at
-  0/5/10/20/30/40/50 percent, three random draws, and 2,000 clustered-bootstrap
-  repetitions. The prompt/base decode/re-tokenize integrity guard is 12 tokens,
-  and the separately audited constructed-row guard is 20 tokens. Small prompt
-  drift is recorded; a base continuation exceeding its guard is
-  canonically re-tokenized and length-matched before contamination. Initial and
-  final counts, signed drift, normalization status, and realized contamination
-  ratio remain recorded.
-- The three Granite 8B dataset cells have already produced full prepared data,
-  target scores, and Binoculars scores. Their evaluation can be rerun without
-  repeating GPU inference.
-- Qwen 2.5 32B on XSum has produced a completed full cell. Other cells remain
-  dynamic; do not claim that they are running or complete without checking
-  Slurm and their manifests.
-
-The Granite-XSum paired splice-artifact audit is a separate diagnostic, not a
-22nd paper cell. Its frozen protocol is in
-`archive/studies/splice_audit/splice_artifact_audit_granite_xsum.json`, its entry point is
-`archive/studies/splice_audit/run_splice_artifact_audit.py`, and its Delta wrapper is
-`archive/studies/splice_audit/delta_splice_artifact_audit.sbatch`. It compares human versus
-same-model donor text under paired token windows and paired sentence positions,
-while reusing the completed Granite-XSum cell's frozen thresholds, directions,
-and clipping specifications. Audit outputs belong below
-`runs/splice_artifact_audits/` and `results/splice_artifact_audits/`. The local
-implementation is not evidence that the Delta gate or full audit has passed;
-check its own manifest, row counts, stderr, summary, and completion marker.
-
-The benchmark-centered realistic-edit study lives under `archive/studies/beemo/`. Its frozen
-local protocol is `archive/studies/beemo/config.json`; the authoritative entry point is
-`archive/studies/beemo/run_beemo.py`; and the scientific and Delta instructions are
-`archive/studies/beemo/SCIENTIFIC_DESIGN.md` and `archive/studies/beemo/DELTA_GUIDE.md`. It treats expert edits
-as machine-origin positives, keeps all nine variants of a record in one split
-and bootstrap cluster, and uses 437/875/875 records for clipping tuning,
-human-only calibration, and testing. Local synthetic tests are not evidence of
-a real Delta completion; check its own manifest, validation report, score
-counts, and stderr before describing it as passed.
+- Primary: XSum, SQuAD, WritingPrompts crossed with Granite 3.3 8B Base,
+  Mistral Small 24B Base, Qwen 2.5 32B. Each cell uses 3,000 source groups,
+  78,000 prepared/scored rows and 2,000 source-cluster bootstraps. Final
+  publication tables have seven detectors and 392 metric rows per cell.
+- The broader Erebus/Qwen-scale matrix is proposed/historical, not accepted
+  completion evidence. Beemo and splice studies are local ignored archives.
+- The seven reported methods include binocular_origin and exclude binocular_gap.
+  The base binoculars key still denotes the legacy gap. Use revision entry
+  points for final methods; do not relabel saved gap columns as origin.
+- Primary origin is prompt-conditioned from saved continuation features.
+  RAID origin is separately scored output-only with official component windows.
+- Revised LRR direction is fixed +1, origin -1. Other directions are learned
+  only from clean tuning. Current v4.2 rejects nonpositive LRR denominator caps.
+- Eight accepted primary revisions are September 4 outputs. Qwen32–SQuAD alone
+  uses the later lrr-v42-20260907T163410Z correction. Do not rerun all nine merely
+  because that cell was amended.
+- Accepted RAID revision: raid-origin-anchored-v41-20260907T044156Z,
+  12,871 sources after 500 pilot exclusions, 167,323 score rows, 2,000
+  bootstraps. Source eight-detector metrics have 416 rows; paper seven-detector
+  projection has 364. All six selected LRR specs passed the positive-cap audit;
+  do not relabel this v4.1 result as v4.2.
+- Final local bundle:
+  downloads/current/primary-nine-plus-raid-final-20260908T150247Z.
+  It records 182 hashed artifacts, 3,528 primary metrics and 99 primary plots.
+  RAID has three source and three paper-view plots. Large JSONL packs remain
+  on Delta and must be preserved for reanalysis.
+- Current configs are defaults, not every cell's exact settings. Granite saved
+  guard 8/hidden states true; other base guards 12; separate constructed guard
+  20 is explicitly saved only for Qwen WritingPrompts. Use resolved manifests.
+- Clipping selection/calibration and fixed-fit bootstrap details differ between
+  primary and RAID. Do not import archived pilot selectors into the final method.
+- Preserve source reports even when they describe eight detectors beside a
+  filtered seven-detector publication CSV; use enclosing export hashes to
+  validate the transformed artifact.
+- Completed results do not establish current Slurm jobs, account balances,
+  available storage, or compatibility with a new source/dependency version.
 
 ## Evaluator status
 
 `experiment_core/analysis/evaluation.py` now precomputes raw and frozen-clipped scalar
 scores once per detector/analysis and reuses indexed NumPy arrays for
 calibration, point metrics, clustered bootstrap intervals, and robustness AUC.
-The local no-download suite passed 38 tests with two Torch-dependent skips when
-this work was reviewed. The implementation has not yet received a full-scale
-before/after Delta timing benchmark, so do not promise a speedup number.
+The user-reported post-reorganization Delta repository smoke (21883773) passed
+all 105 active tests without skips. This is engineering evidence, not a new
+replay of final inference. No controlled full-scale before/after timing benchmark
+establishes an evaluator speedup, so do not promise a speedup number.
 
 For a meaningful evaluator validation, rerun only `--stage evaluate` on an
 existing Granite cell, preserve the old `metrics.csv`, verify identical output,
@@ -155,12 +150,10 @@ Completion requires all of the following, not merely a `COMPLETED` Slurm state:
 - `metrics.csv` includes all seven detectors and both 1% and 5% FPR results;
 - stderr contains no hidden traceback, CUDA failure, or offload surprise.
 
-For Beemo, use its separate validation contract: 19,683 prepared rows; 19,683
-rows in each of the four primary scorer packs and the shared Binoculars pack;
-1,000 metric rows; seven detector methods across 25 scorer-detector
-configurations; both FPR targets; and completed `prepare`, `score`, `evaluate`,
-`plot`, and `validate` stages. Optional Granite adds one scorer pack, six
-configurations, and 240 metric rows.
+Revised scientific outputs additionally require their revision markers and artifact
+hashes. Publication projections have different counts from source compatibility
+results; use docs/FINAL_RESULTS_GUIDE.md. Archived Beemo and splice diagnostics
+have separate historical contracts and are not part of the final bundle.
 
 ## How to start a new agent session
 

@@ -1,315 +1,246 @@
-# Token-level clipping method
+# Detector scores and clipping: final reported methods
 
-Versioned amendment: [docs/DETECTOR_REVISION.md](../DETECTOR_REVISION.md) adds
-`binocular-origin` with numerator-only clipping, retains the former method as
-`binocular-gap`, fixes LRR's direction, and rejects exactly constant clean-tuning
-candidates. The historical definitions below describe the archived gap study;
-its exponential-gap formula must not be called the original Binoculars ratio.
+Audited 2026-09-08 against active code and the downloaded final nine-cell plus
+RAID bundle. This replaces the historical gap-only method note. See
+[Detector revision](../DETECTOR_REVISION.md) for release-specific amendments and
+[Final results guide](../FINAL_RESULTS_GUIDE.md) for the evidence used in reporting.
 
-## Purpose
+## 1. Scope and notation
 
-This document defines the token-level clipping intervention used in the primary
-nine-cell contamination study and the Beemo realistic-edit benchmark. The raw
-detector is always retained as the scientific control. Clipping changes only
-how saved token-level evidence is aggregated into a document score; it does not
-change the generated text, contamination process, detector model, calibration
-documents, or final test documents.
+Clipping changes aggregation of token evidence, not generation, contamination,
+tokenization, or model weights. These are document detectors built from token
+features, not token-labeling or sentence-labeling systems. A clipping bound and
+a human-calibrated classification threshold are different parameters.
 
-The implementation is in `experiment_core/analysis/evaluation.py`. Beemo reuses the same
-detector transformations but has its own balanced clipping-selection objective
-in `archive/studies/beemo/beemo_evaluation.py`.
-
-## Orientation
-
-Some detectors assign larger values to machine text, while others assign
-smaller values. Each detector is therefore oriented using only clean human and
-clean machine documents from the clipping-tuning split.
-
-Let the raw document score be \(S\). Define
+Let \(p_i(v)\) be the conditional scorer distribution, \(x_i\) the observed
+token, and \(n\) the number of scored positions. Natural logarithms are used:
 
 $$
-d =
-\begin{cases}
-+1, & \text{if the mean clean-machine score is at least the mean human score},\\
--1, & \text{otherwise}.
-\end{cases}
+a_i=-\log p_i(x_i),\qquad
+r_i=1+\#\{v:p_i(v)>p_i(x_i)\},\qquad
+\ell_i=\log r_i,\qquad
+h_i=-\sum_v p_i(v)\log p_i(v).
 $$
 
-The oriented raw score is \(dS\), so larger oriented values always mean “more
-machine-like.” Orientation is frozen before calibration or test data are used.
+A bar denotes an arithmetic mean over scored positions. Rank is competition
+rank: tied probabilities receive the same rank, rather than arbitrary positions
+in a sorted vocabulary. Production single-model token features use float32
+logits after the configured model forward pass; this does not mean all inference
+is float32.
 
-## Generic clipping rule
+## 2. Raw scores and direction
 
-For an additive detector, let \(x_i\) be the local contribution of token \(i\)
-and let \(n\) be the number of scored tokens. Its oriented raw score is
-
-$$
-S_{\mathrm{raw}}
-=
-\frac{1}{n}\sum_{i=1}^{n} d x_i.
-$$
-
-For a candidate lower bound \(L\), the clipped score is
-
-$$
-S_{\mathrm{clip}}
-=
-\frac{1}{n}\sum_{i=1}^{n}\max(d x_i,L).
-$$
-
-Clipping therefore limits how strongly an unusually adverse, human-like token
-can reduce the document's machine-evidence score. It does not increase
-favorable contributions and is not a symmetric winsorization rule.
-
-## Detector-specific definitions
-
-| Detector | Local token evidence | Implemented clipping |
+| Reported key | Raw document score | Revised direction |
 |---|---|---|
-| Log likelihood | \(x_i=\log p(y_i\mid y_{<i})\) | Apply the generic oriented lower floor. When \(d=+1\), extremely low token log probabilities are floored. |
-| Rank | \(x_i=\operatorname{rank}(y_i)\), using one-based competition rank | Apply the generic oriented lower floor. When \(d=-1\), this is equivalent to capping extremely high token ranks. |
-| Log rank | \(x_i=\log(\operatorname{rank}(y_i))\) | Apply the generic oriented lower floor. When \(d=-1\), unusually high log ranks are capped. |
-| Entropy | \(x_i=H(p_i)\) | Apply the generic oriented lower floor after learning whether high or low entropy is machine-like in that cell. |
-| Entropy gap | \(x_i=-\log p(y_i\mid y_{<i})-H(p_i)\) | Apply the generic oriented lower floor to the NLL-minus-entropy contribution. |
-| Binoculars | Performer NLL minus observer-to-performer cross-entropy | Clip the oriented local gap before averaging and applying the exponential outer transform. |
-| DetectLLM LRR | Mean NLL divided by mean log rank | Use separate upper caps for NLL and log rank before recomputing the ratio. |
+| log_likelihood | \(-\bar a\) | Learned on clean tuning documents |
+| rank | \(\bar r\) | Learned on clean tuning documents |
+| log_rank | \(\bar\ell\) | Learned on clean tuning documents |
+| lrr | \(\bar a/(\bar\ell+10^{-12})\) | Fixed: larger is machine-like |
+| entropy | \(\bar h\) | Learned on clean tuning documents |
+| entropy_gap | \(\overline{a-h}\) | Learned on clean tuning documents |
+| binocular_origin | Performer mean NLL / observer-to-performer mean cross-entropy | Fixed: smaller is machine-like |
 
-The direction is data-dependent and is not hard-coded by detector name. The
-descriptions above using “when \(d=+1\)” or “when \(d=-1\)” describe the usual
-interpretation rather than an imposed direction.
+For learned directions, \(d=+1\) if the clean machine tuning mean is at least
+the clean human tuning mean, otherwise \(d=-1\). The oriented score is \(dS\);
+larger always supports machine origin. Direction is frozen before calibration,
+not selected separately by attack or test contamination rate.
 
-## Binoculars
+LRR means the [DetectLLM](https://arxiv.org/abs/2306.05540)
+**log-likelihood/log-rank ratio**, not a log-likelihood
+ratio between two probability models. It is a ratio of document means, not a
+mean of tokenwise ratios. Binoculars is also not an ordinary likelihood-ratio
+test. Robustness results for a likelihood ratio cannot automatically be
+asserted for these heuristic scores.
 
-For token \(i\), define the local Binoculars gap
+The [authors' reference repository](https://github.com/mbzuai-nlp/DetectLLM)
+describes the larger-machine LRR direction. Our competition-rank tie handling,
+prompt conditioning in primary cells, and empirical calibration are explicit
+implementation conventions, not a claim of identical upstream execution.
 
-$$
-g_i
-=
-\operatorname{NLL}_{\mathrm{performer},i}
--
-H(p_{\mathrm{observer},i},p_{\mathrm{performer},i}).
-$$
+The signed entropy-gap statistic is connected to Section 5.2 of
+[Radvand et al., A Training-free Method for LLM Text Attribution, v5](https://arxiv.org/html/2501.02406v5#S5.SS2).
+That section gives an absolute-gap test and also discusses a one-sided signed
+test. Our implementation uses the signed gap, an empirical tuning direction,
+and human calibration; it is not an exact reproduction of the absolute-gap
+test or its theoretical threshold. It has no Fast-DetectGPT variance
+normalization. Cite the connection without claiming that the paper's
+assumptions and guarantees have been verified for this experiment.
 
-The ordinary un-oriented Binoculars score is
+## 3. Additive one-sided clipping
 
-$$
-B_{\mathrm{raw}}
-=
-\exp\left(\frac{1}{n}\sum_{i=1}^{n}g_i\right).
-$$
-
-The oriented clipped score is implemented as
-
-$$
-B_{\mathrm{clip}}
-=
-d\exp\left(
-d\frac{1}{n}\sum_{i=1}^{n}\max(dg_i,L)
-\right).
-$$
-
-This retains the documented exponential Binoculars form while limiting
-adverse local gaps. Because the exponential is monotone, calibration remains
-well defined in the oriented score space.
-
-## DetectLLM LRR
-
-LRR is a ratio rather than the mean of one local statistic. Define
+For log likelihood, rank, log rank, entropy, and entropy gap, let \(f_i\) be the
+raw token feature and \(z_i=df_i\). The clipped score is already oriented:
 
 $$
-n_i=-\log p(y_i\mid y_{<i}),
-\qquad
-r_i=\log(\operatorname{rank}(y_i)).
+S_{\mathrm{clip}}=\frac1n\sum_i\max(z_i,L).
 $$
 
-The oriented raw score is
+This caps evidence adverse to the machine label. It is not clipping the final
+document score. With \(d=-1\), it upper-caps the original feature.
+The saved field named lower is a bound on oriented token evidence.
+
+## 4. Ratio-specific clipping
+
+### LRR
+
+The revised direction is \(+1\), with two capped components:
 
 $$
-S_{\mathrm{LRR,raw}}
-=
-d\frac{\overline{n}}{\overline{r}+\epsilon}.
+S_{\mathrm{LRR,clip}}=
+\frac{\operatorname{mean}_i\min(a_i,U_a)}
+{\operatorname{mean}_i\min(\ell_i,U_\ell)+10^{-12}}.
 $$
 
-For candidate upper bounds \(U_n\) and \(U_r\), the clipped score is
+The fields are nll_upper and log_rank_upper. Thus one LRR specification contains
+two component bounds, not literally one scalar. A nonempty specification must
+have finite \(U_\ell>0\). A zero log-rank cap collapses the denominator;
+the small stabilizer does not make that intervention valid LRR.
+
+### Binoculars-origin: two protocols
+
+Performer \(q\) is Falcon-7B-Instruct; observer \(p\) is Falcon-7B.
+Observer-to-performer cross-entropy is \(b_i=-\sum_v p_i(v)\log q_i(v)\).
+The direction is not reversed. The raw score is \(A/B\), smaller = machine-like.
+The baseline attribution is
+[Spotting LLMs With Binoculars](https://arxiv.org/abs/2401.12070).
+
+**Primary nine cells:** both terms use the existing prompt-conditioned
+continuation window and saved arrays. Raw is \(\bar a/\bar b\), clipped is
+\(\operatorname{mean}\min(a_i,U)/\bar b\), aggregated in float64. The prompt
+remains context, not scored continuation. Call this a **prompt-conditioned
+Binoculars-ratio adaptation**, not an output-only upstream reproduction.
+
+**RAID:** output-only input, tokenizer-native special tokens and a 512-input-token
+truncation limit. Performer NLL uses shifted predictions; denominator CE uses
+all input positions, including the final position, with the upstream pad-token
+mask. The terms therefore have different position sets. The gate compares
+components on identical logits with the
+[upstream Binoculars metrics implementation](https://github.com/ahans30/Binoculars/blob/main/binoculars/metrics.py).
+Saved official numerator \(A_{\rm off}\), denominator \(B_{\rm off}\), and
+raw ratio preserve the actual upstream numerical outputs.
+
+The custom RAID numerator-only intervention is anchored:
 
 $$
-S_{\mathrm{LRR,clip}}
-=
-d\frac{
-\overline{\min(n_i,U_n)}
-}{
-\overline{\min(r_i,U_r)}+\epsilon
-}.
+\Delta_U=\operatorname{mean}_{64}\min(a_i,U)-\operatorname{mean}_{64}a_i,\qquad
+A_U=\min\{A_{\rm off},\max(0,A_{\rm off}+\Delta_U)\}.
 $$
 
-This separate capping rule preserves LRR's ratio structure. Applying the
-generic additive floor directly to LRR would define a different detector.
+Active clipping divides float32 \(A_U\) by float32 \(B_{\rm off}\). No clipping,
+or a bound changing no token, returns the saved official raw scalar exactly.
+This avoids claiming that serialized BF16 losses reconstruct CUDA parallel
+reductions bit-for-bit. In exact arithmetic it reduces to the ordinary clipped
+numerator mean. The denominator is unchanged. This is **our clipped extension**,
+not an upstream method.
 
-## Candidate clipping specifications
+### Historical gap
 
-The configured quantile grid is
+The old key binoculars means \(\exp(\overline{a-b})\), renamed binocular_gap
+in revised compatibility outputs. Its local-gap clipping remains readable for
+historical comparison. Neither expression is the official ratio. Final
+seven-detector paper views omit gap; immutable eight-detector source artifacts
+retain it. Never relabel old gap scores as origin.
 
-$$
-\mathcal{Q}
-=
-\{0.80,0.85,0.90,0.95,0.975,0.99,0.995\}.
-$$
+## 5. Candidates and safeguards
 
-For a generic detector, candidate lower bounds are derived from token
-contributions in clean human and clean machine documents from the
-clipping-tuning split:
+The common grid is
+\(\mathcal Q=\{0.80,0.85,0.90,0.95,0.975,0.99,0.995\}\).
+Quantiles use concatenated tokens from **clean human and clean machine tuning
+documents**. Longer documents contribute more token observations; these are
+not quantiles of document means.
 
-$$
-L_q
-=
-Q_{1-q}\left(\{d x_i\}\right),
-\qquad q\in\mathcal{Q}.
-$$
+- Additive: \(L=Q_{1-q}(z)\), up to seven active candidates.
+- Origin: \(U=Q_q(a)\), up to seven active candidates.
+- LRR: Cartesian pairs \((Q_q(a),Q_{q'}(\ell))\), up to 49 active candidates.
+- Empty specification means no clipping and is evaluated first.
 
-These candidates floor approximately the most adverse 20%, 15%, 10%, 5%,
-2.5%, 1%, or 0.5% of clean oriented token contributions.
+Duplicate quantiles need not yield distinct transformations. Revised selection
+rejects a nonempty candidate if every pooled clean human/machine tuning document
+score is exactly identical, or structural full saturation would produce a
+constant apart from rounding. LRR structural saturation requires both
+components; a constant origin numerator alone does not imply a constant ratio.
+V4.2 additionally rejects nonpositive LRR denominator caps. These checks use
+tuning data only. Zero test TPR is not a rejection criterion.
 
-For LRR, candidates are every pair
+No clipping stays available. Primary replacement requires objective improvement
+greater than \(10^{-15}\); RAID uses \(10^{-12}\). Thus no clipping wins a
+numerical tie against the initial candidate. Inspect frozen specifications,
+not just the method label, to establish whether clipping was selected.
 
-$$
-U_n=Q_q(\{n_i\}),
-\qquad
-U_r=Q_{q'}(\{r_i\}),
-\qquad q,q'\in\mathcal{Q},
-$$
+## 6. Tuning objectives actually used
 
-giving 49 capped candidates. The empty specification, meaning no clipping, is
-also a candidate for every detector. If it has the best tuning objective, the
-reported clipped and raw scores are identical.
+All AUROCs compare the applicable machine documents to the same clean human
+tuning documents under the candidate's oriented scores.
 
-## Selection in the primary contamination study
+| Study / method | Objective and population |
+|---|---|
+| Primary primary_frozen_mixture | \(0.8\,\mathrm{AUROC}_{\rm pooled\ mixture}+0.2\,\mathrm{AUROC}_{\rm clean}\) |
+| RAID full universal | \(0.8\,\operatorname{mean}_a\mathrm{AUROC}_a+0.2\,\mathrm{AUROC}_{\rm clean}\); all eleven attacks |
+| RAID eligible universal | Same objective; attacked tuning rows restricted to \(0<\rho\leq0.5\), averaging represented attacks |
+| RAID rate-specific oracle | Mean attack-wise AUROC gain within a bin, with clean AUROC loss at most 0.01 |
 
-Each dataset-model-detector cell receives its own clipping specification. It is
-selected using only the 500-source clipping-tuning split. Candidate bounds are
-constructed from clean human and clean target-model tokens in that split.
+Primary tuning uses requested ratios 10/20/30/40/50%, not 5%, and both modes.
+Three random draws and one tail construction imply random:tail **3:1 row
+weight** in the pooled objective. It is not an equal-weight attack/mode average.
+One frozen specification applies to all reported ratios and both modes.
 
-The predefined robustness mixture contains both random and white-box tail
-contamination at 10%, 20%, 30%, 40%, and 50%. The 5% condition is evaluated but
-is not used to select the clipping specification.
+For RAID universal methods the 20% clean term is a **soft reward**, not a hard
+zero-clean-loss budget. Full tuning retains zero-realized-change and dense
+attacked rows; none is the separate clean term. Eligible filters the attacked
+term only, not clean references or quantile construction. No attack-specific
+caps are fitted.
 
-For candidate specification \(c\), the selection objective is
+RAID oracle bins are \((0,0.05],(0.05,0.10],(0.10,0.20],(0.20,0.50]\).
+Fewer than 250 tuning machine rows or no represented attack triggers the
+full-universal fallback. Routing requires a clean/attacked pair to determine
+the bin. These are secondary oracle diagnostics, not deployable routing or a
+guaranteed upper bound on test performance. See the
+[RAID design](../raid/SCIENTIFIC_DESIGN.md) for rate construction.
 
-$$
-J(c)
-=
-0.8\,\operatorname{AUROC}
-(\text{human},\text{contaminated machine};c)
-+
-0.2\,\operatorname{AUROC}
-(\text{human},\text{clean machine};c).
-$$
+## 7. Calibration and uncertainty
 
-The candidate with the largest objective is frozen. Ties within numerical
-tolerance retain the first candidate, and the candidate order begins with no
-clipping. The frozen specification is then reused for both attack modes, every
-contamination ratio, the calibration split, and the final test split. The
-mode-specific oracle analysis is disabled in the paper configuration.
+Every raw/clipped configuration gets its own threshold from held-out clean
+human calibration scores. Primary targets are 1% and 5%; RAID uses 5% and
+separate thresholds by domain. No threshold is learned from attacked test rows.
 
-## Selection in Beemo
+For \(m\) sorted human calibration scores and target \(\alpha\), allow
+\(k=\lfloor\alpha m\rfloor\) exceedances. The threshold is the next floating-point
+value above zero-based index \(\max(0,m-k-1)\). Prediction uses score at least
+the threshold. Ties can make calibration conservative. This does not guarantee
+held-out FPR equals the target: report actual FPR and its interval with TPR.
 
-Beemo uses the same detector-specific transformations and the same quantile
-grid. Orientation compares human responses with original machine responses in
-the 437-record clipping-tuning split. Candidate bounds are derived from tokens
-in those two clean families.
+AUROC gives half credit for ties. Primary normalized partial AUROC integrates
+the ROC curve over FPR 0–0.05 and divides by 0.05; it is not chance-corrected
+standardized partial AUC. Robustness AUC instead integrates TPR against requested
+contamination rate, normalized by the rate span.
 
-The Beemo objective gives equal weight to four machine-origin families:
+Final intervals use 2,000 source-cluster bootstrap draws and 2.5%/97.5%
+percentile endpoints. Primary resamples sources within a cell; RAID resamples
+within domain. Human documents, machine variants, and raw/clipped measurements
+stay paired. Directions, selected bounds, and calibration thresholds stay fixed.
+Intervals reflect test-source variability conditional on fitting, not the
+uncertainty of the full tuning/calibration pipeline. They are not
+multiplicity-adjusted.
 
-$$
-J_{\mathrm{Beemo}}(c)
-=
-\frac{1}{4}
-\left(
-\operatorname{AUROC}_{\mathrm{original}}(c)
-+\operatorname{AUROC}_{\mathrm{expert}}(c)
-+\operatorname{AUROC}_{\mathrm{Llama}}(c)
-+\operatorname{AUROC}_{\mathrm{GPT}}(c)
-\right),
-$$
+Use stored paired clipped-minus-raw intervals. A full-minus-eligible interval
+cannot be obtained by subtracting separately computed interval endpoints.
 
-where every AUROC contrasts that machine-origin family with independent human
-responses. This balanced objective prevents the clipping bound from being
-selected primarily for the largest edit family.
+## 8. Interpretation and code anchors
 
-## Selection in RAID
+Clipping can improve clean discrimination, contamination robustness, both, or
+neither. Report clean and attacked changes together; improvement is not a
+validation requirement. Synthetic splicing is contamination, not evidence of
+fluent human editing. RAID's normalized tokenizer edit rate is not the exact
+conditional mixture probability in a robustness theorem.
 
-RAID retains one universal specification per detector as the primary method.
-Its tuning objective assigns 80% weight to the mean AUROC across the eleven
-attacks (equally weighted) and 20% to unattacked-machine AUROC.
+Implementation paths relative to the repository root:
 
-A secondary rate-oracle uses four fixed Falcon-token edit-rate intervals:
-\(0<\rho\leq0.05\), \(0.05<\rho\leq0.10\),
-\(0.10<\rho\leq0.20\), and \(0.20<\rho\leq0.50\). Within each
-interval and detector, it selects the feasible candidate with the largest mean
-attacked AUROC gain over raw, equally weighting the attacks represented in that
-interval. Feasibility requires clean-machine AUROC loss relative to raw to be
-at most 0.01. Thus, clean performance is a constraint rather than a positively
-weighted objective term.
-Rows with \(\rho=0\) or \(\rho>0.50\) are excluded from rate-bin fitting and
-attacked-bin evaluation; they remain in universal and attack-level analyses.
-Unattacked rows are additionally reused for the clean-loss constraint and
-counterfactual clean-cost report. A fixed interval with
-fewer than 250 tuning machine rows falls back to the universal specification.
-The boundaries are never moved to equalize sample sizes.
+- experiment_core/detectors/scoring.py: features and legacy scores.
+- experiment_core/detectors/detector_revision.py: ratios, anchoring, safeguards.
+- experiment_core/analysis/evaluation.py: primary fitting/calibration/bootstrap.
+- RAID/binocular_origin.py: official raw components.
+- RAID/raid_evaluation.py: RAID fitting/calibration/bootstrap.
 
-The rate-oracle is not a deployable detector because assigning a test attack to
-an interval requires its unattacked counterpart. It is reported as a mechanism
-diagnostic and possible upper bound; universal clipping remains primary.
-For each rate-specific bound, RAID separately reports its counterfactual effect
-on unattacked `none` rows and its effect on the aggregate and attack-specific
-test rows in the corresponding rate interval.
-
-Before freezing the full RAID analysis, the bounded 500-source pilot also has a
-separate exploratory selector comparison. It crosses full-universal and
-eligible-range-universal fitting with four selectors, and four-bin rate-oracle
-fitting with three nonredundant selectors. It examines four clean-AUROC-loss
-budgets and a denser candidate quantile grid. These 11 methods are implemented
-in `archive/raid_pilots/compare_tuning_methods.py`, write separate point-estimate artifacts,
-and do not change the frozen primary evaluator. Their sole purpose is to choose
-one universal protocol before the full benchmark is run. Since that choice
-uses pilot test outcomes, the comparison records all pilot source IDs and the
-future full benchmark must exclude them before creating its final split.
-
-## Calibration and final evaluation
-
-Raw and clipped aggregation receive separate calibration thresholds. In the
-primary study, thresholds are selected from 500 clean human calibration
-documents; in Beemo, they are selected from 875 human calibration records; and
-in RAID, each universal or fixed-rate specification receives a separate
-per-domain threshold from clean calibration humans. The primary and Beemo
-target false-positive rates are 1% and 5%; RAID reports only 5%.
-
-No clipping direction, bound, or calibration threshold is selected using final
-test outcomes. The final comparisons are paired because raw and clipped scores
-are calculated for the same documents, and confidence intervals resample the
-same source or Beemo record clusters.
-
-## Saved representation
-
-Primary-study `metrics.csv` files store the frozen specification in the
-`clipping_specification` column:
-
-- `{"lower": ...}` for additive detectors and Binoculars;
-- `{"nll_upper": ..., "log_rank_upper": ...}` for LRR;
-- `{}` when no clipping is selected.
-
-Beemo and RAID store complete fitted specifications and tuning diagnostics in
-`frozen_specs.json`. RAID records the universal specification, all four
-rate-oracle specifications, their calibration thresholds, tuning counts, and
-any sparse-bin fallback. The compact export bundle also preserves these files,
-along with all point estimates and confidence intervals needed for tables and
-plots.
-
-## Interpretation
-
-Clipping should be interpreted as a robust aggregation intervention, not as a
-new token-level detector. A positive clipped-minus-raw effect means that
-limiting extreme adverse token contributions improved the chosen evaluation
-metric under the frozen protocol. It does not by itself establish that those
-extreme contributions were caused by genuine human editing; synthetic splice
-boundaries, disrupted coherence, and tokenizer effects can also produce
-extreme local evidence. The primary contamination study and Beemo benchmark
-must therefore be reported as complementary experiments.
+Base configurations still name legacy binoculars. Producing the final ratio
+report requires the revision entry points; a fresh base run is not automatically
+the final seven-detector protocol.

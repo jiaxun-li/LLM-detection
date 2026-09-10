@@ -25,6 +25,8 @@ plots/
 # Local paper sources, figures, PDFs, and LaTeX build artifacts.
 # Keep configs/paper.json tracked: it is an experiment configuration.
 /paper/
+# Local scientific report, including LaTeX sources, figures and build assets.
+/docs/report/
 
 # Historical code and study archives are retained locally, not synchronized.
 /archive/

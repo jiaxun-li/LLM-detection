@@ -91,7 +91,9 @@ the seven corrected detectors, including Binocular-origin.
 ## Archives
 
 See [ARCHIVE_CATALOG.md](ARCHIVE_CATALOG.md) for retained programs and commands.
-Archived code is runnable from the repository root with its new path. Its tests
+Retained archived code is intended to run from the repository root with its new
+path and shared dependencies; this is not a guarantee that every historical
+Delta launcher still works or reproduces an old result under current code. Its tests
 live in `archive/tests/`. Both are ignored by Git, so they remain available locally
 but are not included in a fresh clone. Old committed versions remain recoverable
 from Git history. Imports referencing old paths must use the new package names.
@@ -104,6 +106,21 @@ It has nine primary cells, 3,528 primary metric rows, 99 primary PNGs, and three
 paper-facing RAID PNGs in a nested plot directory. The accompanying tar archive
 and SHA-256 file are retained. `bundle.complete.json` inventories 182 other files;
 the completion marker itself makes 183 files in the extracted directory.
+
+RAID also preserves three original eight-detector PNGs in
+`raid/source_eight_detector_result/plots/`: a recursive count under the whole
+`raid/` subtree is six. For report figures use
+`raid/paper_seven_detector_result/plots/`, which has three. The source result
+has 416 metric rows; its filtered seven-detector projection has 364. Read
+`raid/raid_export_summary.json` for the exact projection and the
+[final-result guide](FINAL_RESULTS_GUIDE.md) for artifact authority and use.
+
+Primary cell folders preserve source validation reports even when their
+`metrics.csv` is a seven-detector projection of an earlier eight-detector
+revision. The original source hashes describe the original source artifacts,
+not a newly filtered table. The enclosing bundle inventory validates the
+downloaded projection. The Qwen32–SQuAD cell uses the later LRR-v4.2 revision;
+do not replace it with the older September 4 revision during consolidation.
 
 Older downloads have moved intact to:
 
